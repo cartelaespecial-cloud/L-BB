@@ -6,15 +6,16 @@ import {
   ChevronDown,
   CreditCard,
   Gift,
+  Info,
   Landmark,
   ShieldCheck,
 } from 'lucide-react';
 import type { ConsultaPublicResult, SiteSettings } from '../types';
-import { formatCpf, isValidCpf, isValidFullName, stripNonDigits } from '../utils/cpf';
 import { BrandMark } from './BrandMark';
 
 interface PublicPortalProps {
   settings: SiteSettings;
+  storageError: string | null;
   onNavigate: (path: string) => void;
 }
 
@@ -22,28 +23,24 @@ const SHOWCASE_IMAGE_URL = '/src/assets/images/loyalty_rewards_showcase_17956726
 
 const FAQ_ITEMS = [
   {
-    q: 'Por que preciso informar um CPF válido para verificar meus pontos?',
-    a: 'Os pontos são vinculados exclusivamente ao CPF do titular. Nosso sistema valida os dígitos verificadores do documento no momento da consulta para garantir segurança e evitar erros de digitação.',
+    q: 'Preciso informar meu nome ou CPF para consultar os pontos?',
+    a: 'Não. Esta consulta funciona com perfis fictícios gerados automaticamente pelo servidor, sem solicitar ou aceitar nome, CPF, e-mail ou qualquer dado pessoal.',
   },
   {
-    q: 'Como funciona a troca dos pontos disponíveis?',
-    a: 'Após validar seu nome completo e CPF, exibimos seu saldo disponível e as modalidades de resgate ativas. Ao confirmar a opção desejada, um protocolo de atendimento é gerado na hora.',
+    q: 'Os pontos exibidos têm valor real para resgate?',
+    a: 'Não. Trata-se de um saldo ilustrativo sem valor para resgate, utilizado apenas para demonstrar a apuração de pontos e a simulação de escolha de benefícios.',
   },
   {
-    q: 'A consulta possui alguma taxa ou custo?',
-    a: 'Não. A verificação do saldo de pontos e a solicitação de troca são totalmente gratuitas para os participantes cadastrados.',
+    q: 'Como funciona a simulação de troca dos pontos?',
+    a: 'Ao clicar em verificar pontos disponíveis, um perfil fictício é gerado no servidor com um saldo ilustrativo. Em seguida, você escolhe uma modalidade e registra uma troca simulada com protocolo.',
   },
   {
-    q: 'Posso consultar mais de uma vez caso tenha dúvidas?',
-    a: 'Sim. Basta clicar em Fazer nova consulta após finalizar ou digitar um novo CPF válido no formulário principal.',
+    q: 'Posso gerar uma nova consulta demonstrativa?',
+    a: 'Sim. Basta clicar em Fazer nova consulta ao concluir a etapa atual para gerar um novo perfil fictício e repetir o fluxo.',
   },
 ];
 
-export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
-  const [fullName, setFullName] = useState('');
-  const [cpfInput, setCpfInput] = useState('');
-  const [touchedName, setTouchedName] = useState(false);
-  const [touchedCpf, setTouchedCpf] = useState(false);
+export function PublicPortal({ settings, storageError, onNavigate }: PublicPortalProps) {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -57,16 +54,7 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
   const [showcaseImgFailed, setShowcaseImgFailed] = useState(false);
 
-  const fullNameInputRef = useRef<HTMLInputElement>(null);
-
-  const cpfDigits = stripNonDigits(cpfInput);
-  const cpfHasAllDigits = cpfDigits.length === 11;
-  const cpfValid = isValidCpf(cpfInput);
-  const nameValid = isValidFullName(fullName);
-
-  const showCpfError = (touchedCpf && cpfDigits.length > 0 && !cpfValid) || (cpfHasAllDigits && !cpfValid);
-  const showCpfSuccess = cpfHasAllDigits && cpfValid;
-  const showNameError = touchedName && fullName.trim().length > 0 && !nameValid;
+  const submitButtonRef = useRef<HTMLButtonElement>(null);
 
   function focusForm(): void {
     const el = document.getElementById('formulario-pontos');
@@ -74,51 +62,31 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
     setTimeout(() => {
-      fullNameInputRef.current?.focus();
+      submitButtonRef.current?.focus();
     }, 250);
-  }
-
-  function handleCpfChange(raw: string): void {
-    setCpfInput(formatCpf(raw));
-    if (formError) setFormError(null);
   }
 
   async function handleConsultarSubmit(e: FormEvent): Promise<void> {
     e.preventDefault();
-    setTouchedName(true);
-    setTouchedCpf(true);
     setFormError(null);
-
-    if (!isValidFullName(fullName)) {
-      setFormError('Digite seu nome completo (nome e sobrenome).');
-      return;
-    }
-
-    if (!isValidCpf(cpfInput)) {
-      setFormError('Apenas CPFs válidos são aceitos. Confira os 11 dígitos informados.');
-      return;
-    }
 
     setSubmitting(true);
     try {
       const response = await fetch('/api/consultas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fullName: fullName.trim(),
-          cpf: cpfInput,
-        }),
+        body: JSON.stringify({}),
       });
       const data = await response.json();
       if (!response.ok) {
-        setFormError(data.error || 'Não foi possível verificar seus pontos no momento.');
+        setFormError(data.error || 'Não foi possível gerar a consulta no momento.');
         return;
       }
       setConsultaResult(data as ConsultaPublicResult);
       setSelectedOptionId(settings.exchangeOptions[0]?.id ?? 'credito-fatura');
       setExchangeError(null);
     } catch {
-      setFormError('Erro de conexão ao consultar seus pontos. Tente novamente.');
+      setFormError('Erro de conexão ao gerar a consulta. Tente novamente.');
     } finally {
       setSubmitting(false);
     }
@@ -139,12 +107,12 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
       });
       const data = await response.json();
       if (!response.ok) {
-        setExchangeError(data.error || 'Não foi possível concluir a solicitação.');
+        setExchangeError(data.error || 'Não foi possível registrar a troca simulada.');
         return;
       }
       setConsultaResult(data as ConsultaPublicResult);
     } catch {
-      setExchangeError('Erro de conexão ao confirmar a troca. Tente novamente.');
+      setExchangeError('Erro de conexão ao registrar a troca simulada. Tente novamente.');
     } finally {
       setExchanging(false);
     }
@@ -152,10 +120,6 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
 
   function handleReset(): void {
     setConsultaResult(null);
-    setFullName('');
-    setCpfInput('');
-    setTouchedName(false);
-    setTouchedCpf(false);
     setFormError(null);
     setExchangeError(null);
   }
@@ -215,6 +179,15 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
       </header>
 
       <main className="flex-1">
+        {storageError && (
+          <div className="bg-red-50 border-b border-red-200">
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 text-xs sm:text-sm text-red-800 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+              <span>{storageError}</span>
+            </div>
+          </div>
+        )}
+
         {/* Hero & Verification Form */}
         <section className="bg-white border-b border-slate-200">
           <div className="max-w-6xl mx-auto px-4 sm:px-6 py-12 lg:py-20">
@@ -237,26 +210,26 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
                 <div className="border-t border-slate-200 pt-6 grid grid-cols-1 sm:grid-cols-3 gap-6">
                   <div>
                     <p className="font-display font-semibold text-sm text-slate-900 mb-1">
-                      01. Informe seus dados
+                      01. Perfil automático
                     </p>
                     <p className="text-sm text-slate-600 leading-relaxed">
-                      Nome completo e CPF com validação automática.
+                      Um perfil fictício é gerado no servidor sem dados pessoais.
                     </p>
                   </div>
                   <div>
                     <p className="font-display font-semibold text-sm text-slate-900 mb-1">
-                      02. Confira seu saldo
+                      02. Saldo ilustrativo
                     </p>
                     <p className="text-sm text-slate-600 leading-relaxed">
-                      Visualize quantos pontos estão liberados para uso.
+                      Visualize a pontuação demonstrativa atribuída à consulta.
                     </p>
                   </div>
                   <div>
                     <p className="font-display font-semibold text-sm text-slate-900 mb-1">
-                      03. Solicite a troca
+                      03. Troca simulada
                     </p>
                     <p className="text-sm text-slate-600 leading-relaxed">
-                      Escolha o benefício desejado e receba o protocolo.
+                      Escolha uma modalidade e gere o protocolo ilustrativo.
                     </p>
                   </div>
                 </div>
@@ -274,139 +247,73 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
                           </h2>
                           <ShieldCheck className="w-5 h-5 text-blue-800 shrink-0" aria-hidden="true" />
                         </div>
+                        <p className="text-xs font-medium text-amber-800 flex items-center gap-1.5 mb-3">
+                          <Info className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                          <span>Saldo ilustrativo · sem valor para resgate</span>
+                        </p>
                         <p className="text-sm text-slate-600 leading-relaxed">
-                          Coloque seu nome completo e um CPF válido para consultar seus pontos disponíveis.
+                          Clique abaixo para gerar um perfil fictício no servidor e verificar os pontos ilustrativos disponíveis para simulação de troca.
                         </p>
                       </div>
 
-                      <div className="space-y-4">
-                        {/* Nome completo */}
-                        <div>
-                          <label
-                            htmlFor="fullName"
-                            className="block text-sm font-medium text-slate-800 mb-1.5"
-                          >
-                            Nome completo
-                          </label>
-                          <input
-                            ref={fullNameInputRef}
-                            id="fullName"
-                            name="fullName"
-                            type="text"
-                            autoComplete="name"
-                            required
-                            value={fullName}
-                            onChange={(e) => {
-                              setFullName(e.target.value);
-                              if (formError) setFormError(null);
-                            }}
-                            onBlur={() => setTouchedName(true)}
-                            placeholder="Digite seu nome e sobrenome"
-                            className={`w-full h-11 px-3.5 rounded-lg bg-white border text-sm text-slate-900 placeholder:text-slate-400 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-800/20 ${
-                              showNameError
-                                ? 'border-red-600 focus:border-red-600'
-                                : 'border-slate-300 focus:border-blue-800'
-                            }`}
-                          />
-                          {showNameError && (
-                            <p className="mt-1.5 text-xs text-red-700 flex items-center gap-1.5">
-                              <AlertCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                              <span>Informe nome e sobrenome completos.</span>
-                            </p>
-                          )}
-                        </div>
-
-                        {/* CPF */}
-                        <div>
-                          <label
-                            htmlFor="cpf"
-                            className="block text-sm font-medium text-slate-800 mb-1.5"
-                          >
-                            CPF (apenas CPF válido)
-                          </label>
-                          <input
-                            id="cpf"
-                            name="cpf"
-                            type="text"
-                            inputMode="numeric"
-                            autoComplete="off"
-                            maxLength={14}
-                            required
-                            value={cpfInput}
-                            onChange={(e) => handleCpfChange(e.target.value)}
-                            onBlur={() => setTouchedCpf(true)}
-                            placeholder="000.000.000-00"
-                            className={`w-full h-11 px-3.5 rounded-lg bg-white border text-sm font-mono tabular-nums text-slate-900 placeholder:text-slate-400 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-800/20 ${
-                              showCpfError
-                                ? 'border-red-600 focus:border-red-600'
-                                : showCpfSuccess
-                                  ? 'border-emerald-600 focus:border-emerald-700'
-                                  : 'border-slate-300 focus:border-blue-800'
-                            }`}
-                          />
-                          {showCpfError && (
-                            <p className="mt-1.5 text-xs text-red-700 flex items-center gap-1.5">
-                              <AlertCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                              <span>CPF inválido. Verifique os dígitos e tente novamente.</span>
-                            </p>
-                          )}
-                          {showCpfSuccess && (
-                            <p className="mt-1.5 text-xs text-emerald-700 flex items-center gap-1.5">
-                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                              <span>CPF válido verificado.</span>
-                            </p>
-                          )}
-                        </div>
-
-                        {formError && (
-                          <div
-                            role="alert"
-                            className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 flex items-start gap-2"
-                          >
-                            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
-                            <span>{formError}</span>
-                          </div>
-                        )}
-
-                        <button
-                          type="submit"
-                          disabled={submitting}
-                          className="w-full h-11 px-5 bg-blue-800 hover:bg-blue-900 disabled:bg-blue-800/60 text-white text-sm font-semibold rounded-lg transition-colors inline-flex items-center justify-center gap-2 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2"
-                        >
-                          <span>
-                            {submitting ? 'Verificando pontos...' : 'Verificar pontos disponíveis'}
-                          </span>
-                          {!submitting && <ArrowRight className="w-4 h-4" aria-hidden="true" />}
-                        </button>
+                      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
+                        <p className="text-xs font-semibold text-slate-800 mb-1">
+                          Consulta sem envio de dados pessoais
+                        </p>
+                        <p className="text-xs text-slate-600 leading-relaxed">
+                          Não solicitamos nome, CPF, e-mail ou telefone. Cada solicitação cria um registro fictício exclusivo para visualização do fluxo.
+                        </p>
                       </div>
 
+                      {formError && (
+                        <div
+                          role="alert"
+                          className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 flex items-start gap-2"
+                        >
+                          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+                          <span>{formError}</span>
+                        </div>
+                      )}
+
+                      <button
+                        ref={submitButtonRef}
+                        type="submit"
+                        disabled={submitting}
+                        className="w-full h-11 px-5 bg-blue-800 hover:bg-blue-900 disabled:bg-blue-800/60 text-white text-sm font-semibold rounded-lg transition-colors inline-flex items-center justify-center gap-2 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2"
+                      >
+                        <span>
+                          {submitting ? 'Gerando consulta...' : 'Verificar pontos disponíveis'}
+                        </span>
+                        {!submitting && <ArrowRight className="w-4 h-4" aria-hidden="true" />}
+                      </button>
+
                       <p className="mt-4 text-xs text-slate-500 leading-relaxed">
-                        Seus dados são utilizados exclusivamente para validação do CPF e apuração de saldo no programa {settings.brandName}.
+                        Exibição demonstrativa de {settings.brandName} · Nenhum dado pessoal é coletado.
                       </p>
                     </form>
                   )}
 
-                  {/* Etapa 2: Saldo encontrado + escolha da troca */}
+                  {/* Etapa 2: Saldo ilustrativo encontrado + escolha da troca simulada */}
                   {consultaResult && consultaResult.status === 'consultado' && (
                     <div>
                       <div className="flex items-start justify-between gap-4 pb-5 border-b border-slate-200">
                         <div>
-                          <p className="text-xs font-medium text-emerald-700 flex items-center gap-1.5 mb-1">
-                            <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
-                            <span>Cadastro localizado com sucesso</span>
+                          <p className="text-xs font-medium text-amber-800 flex items-center gap-1.5 mb-1.5">
+                            <Info className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                            <span>Saldo ilustrativo · sem valor para resgate</span>
                           </p>
                           <h2 className="font-display text-lg font-bold text-slate-950">
-                            {consultaResult.fullName}
+                            {consultaResult.profileLabel}
                           </h2>
                           <p className="text-xs text-slate-500 font-mono tabular-nums mt-0.5">
-                            CPF {consultaResult.maskedCpf} · Protocolo {consultaResult.protocol}
+                            Ref. {consultaResult.referenceCode} · Protocolo {consultaResult.protocol}
                           </p>
                         </div>
                       </div>
 
                       <div className="py-5 border-b border-slate-200">
                         <p className="text-xs font-medium text-slate-500 mb-1">
-                          Saldo identificado para troca
+                          Pontuação demonstrativa gerada
                         </p>
                         <div className="flex items-baseline gap-2">
                           <span className="font-display text-3xl sm:text-4xl font-bold text-slate-950 tabular-nums">
@@ -420,7 +327,7 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
 
                       <div className="pt-5">
                         <p className="text-sm font-semibold text-slate-900 mb-3">
-                          Escolha como deseja trocar seus pontos:
+                          Escolha uma opção para simular a troca:
                         </p>
                         <div className="space-y-2.5">
                           {settings.exchangeOptions.map((option) => {
@@ -479,33 +386,36 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
                             disabled={exchanging}
                             className="flex-1 h-11 px-5 bg-blue-800 hover:bg-blue-900 disabled:bg-blue-800/60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap"
                           >
-                            {exchanging ? 'Registrando troca...' : 'Confirmar troca de pontos'}
+                            {exchanging ? 'Registrando simulação...' : 'Simular troca de pontos'}
                           </button>
                           <button
                             type="button"
                             onClick={handleReset}
                             className="h-11 px-4 border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-sm font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap"
                           >
-                            Consultar outro CPF
+                            Nova consulta
                           </button>
                         </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Etapa 3: Solicitação confirmada */}
+                  {/* Etapa 3: Troca simulada confirmada */}
                   {consultaResult && consultaResult.status === 'troca_solicitada' && (
                     <div>
+                      <p className="text-xs font-medium text-amber-800 flex items-center gap-1.5 mb-2">
+                        <Info className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>Saldo ilustrativo · sem valor para resgate</span>
+                      </p>
                       <div className="flex items-center gap-2.5 text-emerald-700 mb-3">
                         <CheckCircle2 className="w-6 h-6 shrink-0" aria-hidden="true" />
                         <h2 className="font-display text-xl font-bold text-slate-950">
-                          Solicitação de troca registrada
+                          Troca simulada registrada
                         </h2>
                       </div>
                       <p className="text-sm text-slate-600 leading-relaxed mb-5">
-                        Recebemos o pedido de conversão de pontos para{' '}
-                        <strong className="text-slate-900">{consultaResult.fullName}</strong>.
-                        Guarde seu número de protocolo para acompanhamento.
+                        A simulação de conversão foi registrada para{' '}
+                        <strong className="text-slate-900">{consultaResult.profileLabel}</strong> sem coleta de dados pessoais.
                       </p>
 
                       <dl className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-200 text-sm mb-6">
@@ -516,19 +426,19 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
                           </dd>
                         </div>
                         <div className="px-4 py-3 flex items-center justify-between gap-4">
-                          <dt className="text-slate-500">CPF verificado</dt>
+                          <dt className="text-slate-500">Referência</dt>
                           <dd className="font-mono text-slate-900 tabular-nums">
-                            {consultaResult.maskedCpf}
+                            {consultaResult.referenceCode}
                           </dd>
                         </div>
                         <div className="px-4 py-3 flex items-center justify-between gap-4">
-                          <dt className="text-slate-500">Pontos utilizados</dt>
+                          <dt className="text-slate-500">Pontos ilustrativos</dt>
                           <dd className="font-semibold text-slate-950 tabular-nums">
                             {consultaResult.pointsAvailable.toLocaleString('pt-BR')} pts
                           </dd>
                         </div>
                         <div className="px-4 py-3 flex items-center justify-between gap-4">
-                          <dt className="text-slate-500">Modalidade selecionada</dt>
+                          <dt className="text-slate-500">Modalidade simulada</dt>
                           <dd className="font-medium text-blue-800 text-right">
                             {consultaResult.selectedOptionTitle}
                           </dd>
@@ -567,7 +477,7 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
                   <div className="w-full h-64 sm:h-80 lg:h-full min-h-[280px] rounded-xl border border-slate-200 bg-gradient-to-br from-slate-900 via-slate-800 to-blue-950 p-8 flex flex-col justify-end text-white">
                     <p className="font-display text-2xl font-bold">{settings.brandName}</p>
                     <p className="text-sm text-slate-300 mt-1">
-                      Consulta segura de pontos acumulados e resgate simplificado.
+                      Demonstração de consulta de pontos e simulação de escolha de benefícios.
                     </p>
                   </div>
                 )}
@@ -575,26 +485,26 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
 
               <div className="lg:col-span-5 flex flex-col justify-center">
                 <p className="text-xs font-semibold text-blue-800 mb-2">
-                  Transparência em cada etapa
+                  Experiência demonstrativa segura
                 </p>
                 <h2 className="font-display text-2xl sm:text-3xl font-bold text-slate-950 tracking-tight mb-4">
-                  Do saldo acumulado ao benefício escolhido em poucos minutos
+                  Do saldo ilustrativo ao benefício simulado em poucos cliques
                 </h2>
                 <p className="text-sm sm:text-base text-slate-600 leading-relaxed mb-6">
-                  Nosso sistema analisa automaticamente os dígitos verificadores do CPF antes de registrar qualquer pedido, evitando divergências cadastrais e acelerando a liberação dos seus pontos.
+                  Todo o fluxo opera com perfis fictícios gerados automaticamente pelo servidor, preservando a visualização completa das etapas sem coletar informações pessoais.
                 </p>
 
                 <dl className="grid grid-cols-2 gap-6 border-t border-slate-200 pt-6">
                   <div>
-                    <dt className="text-xs text-slate-500 mb-1">Validação cadastral</dt>
+                    <dt className="text-xs text-slate-500 mb-1">Dados pessoais</dt>
                     <dd className="font-display text-xl font-bold text-slate-950 tabular-nums">
-                      100% CPF válido
+                      Não coletados
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-xs text-slate-500 mb-1">Emissão de protocolo</dt>
+                    <dt className="text-xs text-slate-500 mb-1">Protocolo ilustrativo</dt>
                     <dd className="font-display text-xl font-bold text-slate-950 tabular-nums">
-                      Imediata
+                      Imediato
                     </dd>
                   </div>
                 </dl>
@@ -608,10 +518,10 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
           <div className="max-w-6xl mx-auto px-4 sm:px-6">
             <div className="max-w-2xl mb-10">
               <h2 className="font-display text-2xl sm:text-3xl font-bold text-slate-950 tracking-tight mb-3">
-                Opções disponíveis para troca
+                Opções disponíveis para simulação
               </h2>
               <p className="text-sm sm:text-base text-slate-600 leading-relaxed">
-                Veja as formas de conversão aceitas pelo programa {settings.brandName} após a confirmação do seu saldo.
+                Confira as modalidades ilustrativas configuradas para o portal {settings.brandName}.
               </p>
             </div>
 
@@ -635,7 +545,7 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
                       </p>
                     </div>
                     <div className="pt-4 border-t border-slate-200 flex items-center justify-between text-xs">
-                      <span className="text-slate-500">Conversão</span>
+                      <span className="text-slate-500">Referência ilustrativa</span>
                       <span className="font-mono font-semibold text-slate-900 tabular-nums">
                         {option.rateLabel}
                       </span>
@@ -692,11 +602,11 @@ export function PublicPortal({ settings, onNavigate }: PublicPortalProps) {
           <div className="flex items-center gap-3">
             <BrandMark brandName={settings.brandName} brandLogoUrl={settings.brandLogoUrl} size="sm" />
             <span aria-hidden="true">·</span>
-            <span>© {new Date().getFullYear()} Todos os direitos reservados</span>
+            <span>Saldo ilustrativo · sem valor para resgate</span>
           </div>
           <div className="flex items-center gap-6">
             <a href="#formulario-pontos" className="hover:text-slate-900 transition-colors">
-              Consultar CPF
+              Consultar pontos
             </a>
             <button
               type="button"

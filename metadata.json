@@ -1,6 +1,6 @@
 {
   "name": "Portal de Pontos",
-  "description": "Plataforma personalizável para verificação e troca de pontos com painel administrativo.",
+  "description": "Plataforma personalizável para demonstração de consulta e troca ilustrativa de pontos com painel administrativo.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -1,117 +1,521 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import type { ConsultaAdminRecord, ExchangeOption, SiteSettings } from './src/types.ts';
-import { formatCpf, isValidCpf, isValidFullName, maskCpf, stripNonDigits } from './src/utils/cpf.ts';
 
-interface StoredConsulta extends ConsultaAdminRecord {
-  cpfDigits: string;
+interface StoredLogo {
+  mime: 'image/png' | 'image/jpeg' | 'image/webp';
+  base64: string;
+  revision: number;
 }
 
-interface StoreData {
-  adminPasscodeHash: string;
-  settings: SiteSettings;
+type StoredConsulta = ConsultaAdminRecord;
+
+interface PortalDataPayload {
+  settings: Omit<SiteSettings, 'brandLogoUrl' | 'passcodeManagedByEnv'>;
+  logo: StoredLogo | null;
   consultas: StoredConsulta[];
+  adminPasscodeHash?: string;
+}
+
+interface LocalStoreEnvelope {
+  revision: number;
+  data: PortalDataPayload;
+}
+
+class RevisionConflictError extends Error {
+  constructor(message = 'Os dados foram atualizados por outra operação simultânea. Tente novamente.') {
+    super(message);
+    this.name = 'RevisionConflictError';
+  }
+}
+
+class StorageConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StorageConfigError';
+  }
+}
+
+class StorageBackendError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StorageBackendError';
+  }
 }
 
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(process.cwd(), 'data');
-const UPLOADS_DIR = path.resolve(DATA_DIR, 'uploads');
 const STORE_PATH = path.resolve(DATA_DIR, 'store.json');
-const SESSION_SECRET = process.env.SESSION_SECRET?.trim() || crypto.randomBytes(32).toString('hex');
+const DEV_FALLBACK_SESSION_SECRET = crypto.randomBytes(32).toString('hex');
 
-// Initial scrypt hash for the requested initial admin passcode (overridable via ADMIN_PASSCODE env or /painel)
-const INITIAL_ADMIN_HASH =
+// Initial scrypt hash used strictly in local development when ADMIN_PASSCODE is not configured
+const INITIAL_LOCAL_ADMIN_HASH =
   '87e92f2d559cdd2391a399986e34f778:65713ac0b6e9fbbf9cbde0fa08719ba48a21fe86cc0c06300bf9eabbbad8485ff8f798f0aa69ba366693465211a6144f2ba4cbf131181fde6734e00ef5208e10';
 
 const DEFAULT_EXCHANGE_OPTIONS: ExchangeOption[] = [
   {
     id: 'credito-fatura',
     title: 'Crédito em Fatura ou Desconto',
-    description: 'Abatimento direto em compras e faturas participantes',
+    description: 'Simulação de abatimento direto em compras participantes',
     rateLabel: '1.000 pts = R$ 50,00',
   },
   {
     id: 'vale-compras',
     title: 'Vale-Compras Digital',
-    description: 'Voucher imediato para lojas e parceiros credenciados',
+    description: 'Simulação de voucher para lojas e parceiros credenciados',
     rateLabel: '1.000 pts = R$ 45,00',
   },
   {
     id: 'cashback-conta',
     title: 'Transferência para Conta',
-    description: 'Conversão em saldo disponível via chave cadastrada',
+    description: 'Simulação de conversão em saldo demonstrativo',
     rateLabel: '1.000 pts = R$ 40,00',
   },
 ];
 
-const DEFAULT_SETTINGS: SiteSettings = {
+const DEFAULT_CORE_SETTINGS: Omit<SiteSettings, 'brandLogoUrl' | 'passcodeManagedByEnv'> = {
   brandName: 'Portal de Pontos',
-  brandLogoUrl: null,
   heroTitle: 'Vamos verificar se você tem pontos disponíveis',
   heroSubtitle:
-    'Consulte agora seu saldo vinculado ao CPF e solicite a troca dos seus pontos por benefícios, créditos ou descontos.',
+    'Explore a consulta demonstrativa com perfil fictício gerado automaticamente e simule a troca dos pontos por benefícios.',
   formHeading: 'Vamos trocar eles em pontos',
-  pointsLabel: 'pontos disponíveis',
+  pointsLabel: 'pontos ilustrativos',
   minPointsPreview: 1250,
   maxPointsPreview: 4850,
   exchangeOptions: DEFAULT_EXCHANGE_OPTIONS,
 };
 
-function ensureDirs(): void {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const FICTITIOUS_PROFILES = [
+  'Ana Beatriz · Perfil Fictício',
+  'Carlos Eduardo · Perfil Fictício',
+  'Fernanda Costa · Perfil Fictício',
+  'Rafael Mendes · Perfil Fictício',
+  'Juliana Rocha · Perfil Fictício',
+  'Marcos Vinícius · Perfil Fictício',
+  'Patrícia Lima · Perfil Fictício',
+  'Lucas Almeida · Perfil Fictício',
+];
+
+function getSupabaseConfig(): {
+  enabled: boolean;
+  restEndpoint: string;
+  secretKey: string;
+} {
+  const urlRaw = process.env.SUPABASE_URL?.trim() || '';
+  const secretKey = process.env.SUPABASE_SECRET_KEY?.trim() || '';
+
+  if (!urlRaw && !secretKey) {
+    return { enabled: false, restEndpoint: '', secretKey: '' };
+  }
+
+  if (!urlRaw || !secretKey) {
+    throw new StorageConfigError(
+      'Configuração do Supabase incompleta: defina SUPABASE_URL e SUPABASE_SECRET_KEY em Settings > Secrets.',
+    );
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(urlRaw);
+  } catch {
+    throw new StorageConfigError('SUPABASE_URL inválida. Verifique a URL configurada em Settings > Secrets.');
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new StorageConfigError('SUPABASE_URL deve utilizar o protocolo HTTPS.');
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host === '169.254.169.254' ||
+    isPrivateIp(host)
+  ) {
+    throw new StorageConfigError('SUPABASE_URL aponta para um endereço de rede inválido.');
+  }
+
+  const baseOrigin = parsed.origin.replace(/\/+$/, '');
+  return {
+    enabled: true,
+    restEndpoint: `${baseOrigin}/rest/v1/portal_store`,
+    secretKey,
+  };
 }
 
-function loadStore(): StoreData {
-  ensureDirs();
-  if (!fs.existsSync(STORE_PATH)) {
-    const initial: StoreData = {
-      adminPasscodeHash: INITIAL_ADMIN_HASH,
-      settings: DEFAULT_SETTINGS,
-      consultas: [],
+function isPrivateIp(host: string): boolean {
+  if (net.isIPv4(host)) {
+    const parts = host.split('.').map(Number);
+    if (parts[0] === 10) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 169 && parts[1] === 254) return true;
+    if (parts[0] === 127) return true;
+  }
+  if (net.isIPv6(host)) {
+    const lower = host.toLowerCase();
+    if (lower === '::1' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isSupabaseModeActive(): boolean {
+  const urlRaw = process.env.SUPABASE_URL?.trim() || '';
+  const secretKey = process.env.SUPABASE_SECRET_KEY?.trim() || '';
+  return Boolean(urlRaw || secretKey);
+}
+
+function getAdminAuthConfig(): {
+  ready: boolean;
+  error?: string;
+  sessionSecret: string;
+  envPasscode: string;
+} {
+  const supabaseActive = isSupabaseModeActive();
+  const envPasscode = process.env.ADMIN_PASSCODE?.trim() || '';
+  const envSessionSecret = process.env.SESSION_SECRET?.trim() || '';
+
+  if (supabaseActive) {
+    if (!envPasscode || !envSessionSecret) {
+      return {
+        ready: false,
+        error:
+          'Autenticação administrativa indisponível em modo Supabase: defina ADMIN_PASSCODE e SESSION_SECRET em Settings > Secrets.',
+        sessionSecret: '',
+        envPasscode: '',
+      };
+    }
+    return {
+      ready: true,
+      sessionSecret: envSessionSecret,
+      envPasscode,
     };
-    saveStore(initial);
+  }
+
+  return {
+    ready: true,
+    sessionSecret: envSessionSecret || DEV_FALLBACK_SESSION_SECRET,
+    envPasscode,
+  };
+}
+
+function sanitizeConsultas(rawConsultas: unknown): StoredConsulta[] {
+  if (!Array.isArray(rawConsultas)) return [];
+  const clean: StoredConsulta[] = [];
+  for (const item of rawConsultas) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    // Never read or migrate legacy CPF/PII entries
+    if ('cpfDigits' in record || 'cpfFormatted' in record || 'cpf' in record) {
+      continue;
+    }
+    if (
+      typeof record.id !== 'string' ||
+      typeof record.protocol !== 'string' ||
+      typeof record.profileLabel !== 'string' ||
+      typeof record.referenceCode !== 'string' ||
+      typeof record.pointsAvailable !== 'number' ||
+      (record.status !== 'consultado' && record.status !== 'troca_solicitada') ||
+      typeof record.createdAt !== 'string'
+    ) {
+      continue;
+    }
+    clean.push({
+      id: record.id,
+      protocol: record.protocol,
+      profileLabel: record.profileLabel,
+      referenceCode: record.referenceCode,
+      pointsAvailable: record.pointsAvailable,
+      status: record.status,
+      selectedOptionId: typeof record.selectedOptionId === 'string' ? record.selectedOptionId : null,
+      selectedOptionTitle: typeof record.selectedOptionTitle === 'string' ? record.selectedOptionTitle : null,
+      createdAt: record.createdAt,
+      exchangedAt: typeof record.exchangedAt === 'string' ? record.exchangedAt : null,
+    });
+  }
+  return clean.slice(0, 250);
+}
+
+function sanitizeLogo(rawLogo: unknown): StoredLogo | null {
+  if (!rawLogo || typeof rawLogo !== 'object') return null;
+  const logo = rawLogo as Record<string, unknown>;
+  if (
+    (logo.mime === 'image/png' || logo.mime === 'image/jpeg' || logo.mime === 'image/webp') &&
+    typeof logo.base64 === 'string' &&
+    logo.base64.length > 0 &&
+    typeof logo.revision === 'number'
+  ) {
+    return {
+      mime: logo.mime,
+      base64: logo.base64,
+      revision: logo.revision,
+    };
+  }
+  return null;
+}
+
+function normalizePortalData(raw: unknown, includeLocalHash: boolean): PortalDataPayload {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const rawSettings =
+    obj.settings && typeof obj.settings === 'object'
+      ? (obj.settings as Record<string, unknown>)
+      : {};
+
+  const exchangeOptions =
+    Array.isArray(rawSettings.exchangeOptions) && rawSettings.exchangeOptions.length > 0
+      ? (rawSettings.exchangeOptions as ExchangeOption[])
+      : DEFAULT_EXCHANGE_OPTIONS;
+
+  const minPts =
+    typeof rawSettings.minPointsPreview === 'number' && Number.isFinite(rawSettings.minPointsPreview)
+      ? Math.max(100, Math.min(1000000, Math.round(rawSettings.minPointsPreview)))
+      : DEFAULT_CORE_SETTINGS.minPointsPreview;
+
+  const maxPts =
+    typeof rawSettings.maxPointsPreview === 'number' && Number.isFinite(rawSettings.maxPointsPreview)
+      ? Math.max(minPts, Math.min(1000000, Math.round(rawSettings.maxPointsPreview)))
+      : Math.max(minPts, DEFAULT_CORE_SETTINGS.maxPointsPreview);
+
+  const normalized: PortalDataPayload = {
+    settings: {
+      brandName:
+        typeof rawSettings.brandName === 'string' && rawSettings.brandName.trim().length >= 2
+          ? rawSettings.brandName.trim().slice(0, 60)
+          : DEFAULT_CORE_SETTINGS.brandName,
+      heroTitle:
+        typeof rawSettings.heroTitle === 'string' && rawSettings.heroTitle.trim().length >= 4
+          ? rawSettings.heroTitle.trim().slice(0, 120)
+          : DEFAULT_CORE_SETTINGS.heroTitle,
+      heroSubtitle:
+        typeof rawSettings.heroSubtitle === 'string' && rawSettings.heroSubtitle.trim().length >= 4
+          ? rawSettings.heroSubtitle.trim().slice(0, 260)
+          : DEFAULT_CORE_SETTINGS.heroSubtitle,
+      formHeading:
+        typeof rawSettings.formHeading === 'string' && rawSettings.formHeading.trim().length >= 4
+          ? rawSettings.formHeading.trim().slice(0, 100)
+          : DEFAULT_CORE_SETTINGS.formHeading,
+      pointsLabel:
+        typeof rawSettings.pointsLabel === 'string' && rawSettings.pointsLabel.trim().length >= 2
+          ? rawSettings.pointsLabel.trim().slice(0, 40)
+          : DEFAULT_CORE_SETTINGS.pointsLabel,
+      minPointsPreview: minPts,
+      maxPointsPreview: maxPts,
+      exchangeOptions,
+    },
+    logo: sanitizeLogo(obj.logo),
+    consultas: sanitizeConsultas(obj.consultas),
+  };
+
+  if (includeLocalHash) {
+    normalized.adminPasscodeHash =
+      typeof obj.adminPasscodeHash === 'string' && obj.adminPasscodeHash.includes(':')
+        ? obj.adminPasscodeHash
+        : INITIAL_LOCAL_ADMIN_HASH;
+  }
+
+  return normalized;
+}
+
+function ensureLocalDir(): void {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function readLocalEnvelope(): LocalStoreEnvelope {
+  ensureLocalDir();
+  if (!fs.existsSync(STORE_PATH)) {
+    const initial: LocalStoreEnvelope = {
+      revision: 1,
+      data: normalizePortalData({}, true),
+    };
+    writeLocalEnvelope(initial);
     return initial;
   }
 
   try {
     const raw = fs.readFileSync(STORE_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<StoreData>;
-    return {
-      adminPasscodeHash:
-        typeof parsed.adminPasscodeHash === 'string' && parsed.adminPasscodeHash.includes(':')
-          ? parsed.adminPasscodeHash
-          : INITIAL_ADMIN_HASH,
-      settings: {
-        ...DEFAULT_SETTINGS,
-        ...(parsed.settings || {}),
-        exchangeOptions:
-          Array.isArray(parsed.settings?.exchangeOptions) && parsed.settings.exchangeOptions.length > 0
-            ? parsed.settings.exchangeOptions
-            : DEFAULT_EXCHANGE_OPTIONS,
-      },
-      consultas: Array.isArray(parsed.consultas) ? parsed.consultas : [],
+    const parsed = JSON.parse(raw) as Partial<LocalStoreEnvelope & PortalDataPayload>;
+    if (typeof parsed.revision === 'number' && parsed.data && typeof parsed.data === 'object') {
+      return {
+        revision: parsed.revision,
+        data: normalizePortalData(parsed.data, true),
+      };
+    }
+    // Upgrade legacy local structure safely without migrating any CPF/PII entries
+    const cleanEnvelope: LocalStoreEnvelope = {
+      revision: 1,
+      data: normalizePortalData(parsed, true),
     };
+    writeLocalEnvelope(cleanEnvelope);
+    return cleanEnvelope;
   } catch {
-    const fallback: StoreData = {
-      adminPasscodeHash: INITIAL_ADMIN_HASH,
-      settings: DEFAULT_SETTINGS,
-      consultas: [],
+    const fallback: LocalStoreEnvelope = {
+      revision: 1,
+      data: normalizePortalData({}, true),
     };
-    saveStore(fallback);
+    writeLocalEnvelope(fallback);
     return fallback;
   }
 }
 
-function saveStore(data: StoreData): void {
-  ensureDirs();
+function writeLocalEnvelope(envelope: LocalStoreEnvelope): void {
+  ensureLocalDir();
   const tmpPath = `${STORE_PATH}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+  fs.writeFileSync(tmpPath, JSON.stringify(envelope, null, 2), 'utf-8');
   fs.renameSync(tmpPath, STORE_PATH);
+}
+
+function buildSupabaseHeaders(secretKey: string, extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = {
+    apikey: secretKey,
+    ...extra,
+  };
+  // Legacy service_role keys are JWTs (3 dot-separated segments); modern sb_secret_ keys must not be sent as Bearer JWTs
+  if (secretKey.split('.').length === 3) {
+    headers.Authorization = `Bearer ${secretKey}`;
+  }
+  return headers;
+}
+
+async function extractSafeSupabaseError(response: globalThis.Response): Promise<string> {
+  try {
+    const raw = await response.text();
+    const parsed = JSON.parse(raw) as { message?: unknown; code?: unknown; hint?: unknown };
+    const msg = typeof parsed.message === 'string' ? parsed.message : '';
+    const code = typeof parsed.code === 'string' ? parsed.code : '';
+    const details = [code, msg].filter(Boolean).join(': ');
+    return details ? ` (${details})` : '';
+  } catch {
+    return '';
+  }
+}
+
+async function readPortalState(): Promise<{ revision: number; data: PortalDataPayload }> {
+  const sb = getSupabaseConfig();
+  if (!sb.enabled) {
+    return readLocalEnvelope();
+  }
+
+  let response: globalThis.Response;
+  try {
+    response = await fetch(`${sb.restEndpoint}?id=eq.1&select=id,revision,data`, {
+      method: 'GET',
+      headers: buildSupabaseHeaders(sb.secretKey, {
+        Accept: 'application/json',
+      }),
+    });
+  } catch {
+    throw new StorageBackendError('Não foi possível conectar ao serviço Supabase configurado.');
+  }
+
+  if (!response.ok) {
+    const detail = await extractSafeSupabaseError(response);
+    throw new StorageBackendError(
+      `Falha ao consultar armazenamento Supabase (HTTP ${response.status})${detail}.`,
+    );
+  }
+
+  let rows: unknown;
+  try {
+    rows = await response.json();
+  } catch {
+    throw new StorageBackendError('Resposta inválida recebida do Supabase.');
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new StorageBackendError(
+      'Linha id=1 não encontrada na tabela public.portal_store do Supabase.',
+    );
+  }
+
+  const row = rows[0] as { id?: unknown; revision?: unknown; data?: unknown };
+  const revision = Number(row.revision);
+  if (!Number.isFinite(revision)) {
+    throw new StorageBackendError('Campo revision inválido no registro id=1 do Supabase.');
+  }
+
+  return {
+    revision,
+    data: normalizePortalData(row.data, false),
+  };
+}
+
+async function mutatePortalState<T>(
+  mutator: (data: PortalDataPayload) => { nextData: PortalDataPayload; result: T },
+): Promise<{ revision: number; data: PortalDataPayload; result: T }> {
+  const sb = getSupabaseConfig();
+  const current = await readPortalState();
+  const { nextData, result } = mutator(structuredClone(current.data));
+
+  if (!sb.enabled) {
+    const latestOnDisk = readLocalEnvelope();
+    if (latestOnDisk.revision !== current.revision) {
+      throw new RevisionConflictError();
+    }
+    const nextRevision = current.revision + 1;
+    writeLocalEnvelope({ revision: nextRevision, data: nextData });
+    return { revision: nextRevision, data: nextData, result };
+  }
+
+  // Strip local-only hash before writing to Supabase
+  const { adminPasscodeHash: _unusedHash, ...supabaseData } = nextData;
+
+  let response: globalThis.Response;
+  try {
+    response = await fetch(
+      `${sb.restEndpoint}?id=eq.1&revision=eq.${encodeURIComponent(String(current.revision))}`,
+      {
+        method: 'PATCH',
+        headers: buildSupabaseHeaders(sb.secretKey, {
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
+        }),
+        body: JSON.stringify({
+          revision: current.revision + 1,
+          data: supabaseData,
+        }),
+      },
+    );
+  } catch {
+    throw new StorageBackendError('Erro de rede ao salvar dados no Supabase.');
+  }
+
+  if (!response.ok) {
+    const detail = await extractSafeSupabaseError(response);
+    throw new StorageBackendError(
+      `Falha ao persistir dados no Supabase (HTTP ${response.status})${detail}.`,
+    );
+  }
+
+  let updatedRows: unknown;
+  try {
+    updatedRows = await response.json();
+  } catch {
+    throw new StorageBackendError('Resposta inválida ao confirmar atualização no Supabase.');
+  }
+
+  if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
+    throw new RevisionConflictError();
+  }
+
+  const updated = updatedRows[0] as { revision?: unknown };
+  const nextRevision = Number(updated.revision ?? current.revision + 1);
+  return { revision: nextRevision, data: nextData, result };
+}
+
+function toPublicSettings(data: PortalDataPayload): SiteSettings {
+  return {
+    ...data.settings,
+    brandLogoUrl: data.logo ? `/api/logo?v=${data.logo.revision}` : null,
+    passcodeManagedByEnv: isSupabaseModeActive() || Boolean(process.env.ADMIN_PASSCODE?.trim()),
+  };
 }
 
 function hashPasscode(passcode: string): string {
@@ -120,15 +524,19 @@ function hashPasscode(passcode: string): string {
   return `${salt}:${derived}`;
 }
 
-function verifyPasscode(candidate: string, store: StoreData): boolean {
-  const envPasscode = process.env.ADMIN_PASSCODE?.trim();
+function verifyPasscode(candidate: string, data: PortalDataPayload, envPasscode: string): boolean {
   if (envPasscode && envPasscode.length > 0) {
     const a = crypto.createHash('sha256').update(candidate).digest();
     const b = crypto.createHash('sha256').update(envPasscode).digest();
     return crypto.timingSafeEqual(a, b);
   }
 
-  const [salt, storedHex] = store.adminPasscodeHash.split(':');
+  if (isSupabaseModeActive()) {
+    return false;
+  }
+
+  const stored = data.adminPasscodeHash || INITIAL_LOCAL_ADMIN_HASH;
+  const [salt, storedHex] = stored.split(':');
   if (!salt || !storedHex) return false;
   const derived = crypto.scryptSync(candidate, salt, 64);
   const storedBuf = Buffer.from(storedHex, 'hex');
@@ -136,22 +544,23 @@ function verifyPasscode(candidate: string, store: StoreData): boolean {
   return crypto.timingSafeEqual(derived, storedBuf);
 }
 
-function signToken(payload: Record<string, unknown>, ttlSeconds: number): string {
+function signToken(payload: Record<string, unknown>, ttlSeconds: number, secret: string): string {
   const fullPayload = {
     ...payload,
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + ttlSeconds,
   };
   const encoded = Buffer.from(JSON.stringify(fullPayload), 'utf-8').toString('base64url');
-  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
+  const sig = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
   return `${encoded}.${sig}`;
 }
 
-function verifyToken(token: string): Record<string, unknown> | null {
+function verifyToken(token: string, secret: string): Record<string, unknown> | null {
+  if (!secret) return null;
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const [encoded, sig] = parts;
-  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
+  const expectedSig = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
   const sigBuf = Buffer.from(sig);
   const expBuf = Buffer.from(expectedSig);
   if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
@@ -169,13 +578,20 @@ function verifyToken(token: string): Record<string, unknown> | null {
 }
 
 function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
+  const authCfg = getAdminAuthConfig();
+  if (!authCfg.ready) {
+    res.status(503).json({ error: authCfg.error });
+    return;
+  }
+
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Autenticação necessária.' });
     return;
   }
+
   const token = authHeader.slice('Bearer '.length).trim();
-  const payload = verifyToken(token);
+  const payload = verifyToken(token, authCfg.sessionSecret);
   if (!payload || payload.role !== 'admin') {
     res.status(401).json({ error: 'Sessão expirada ou inválida. Entre novamente.' });
     return;
@@ -209,18 +625,15 @@ function clearLoginAttempts(ip: string): void {
   loginAttempts.delete(ip);
 }
 
-function computeDeterministicPoints(cpfDigits: string, minPts: number, maxPts: number): number {
+function generateIllustrativePoints(minPts: number, maxPts: number): number {
   const min = Math.max(100, Math.min(minPts, maxPts));
   const max = Math.max(min, maxPts);
-  const digest = crypto.createHash('sha256').update(cpfDigits).digest();
-  const num = digest.readUInt32BE(0);
-  const raw = min + (num % (max - min + 1));
+  const raw = min === max ? min : crypto.randomInt(min, max + 1);
   return Math.round(raw / 10) * 10;
 }
 
-function detectImageType(buffer: Buffer): { ext: 'png' | 'jpg' | 'webp'; mime: string } | null {
+function detectImageType(buffer: Buffer): { ext: 'png' | 'jpg' | 'webp'; mime: 'image/png' | 'image/jpeg' | 'image/webp' } | null {
   if (buffer.length < 12) return null;
-  // PNG: 89 50 4E 47 0D 0A 1A 0A
   if (
     buffer[0] === 0x89 &&
     buffer[1] === 0x50 &&
@@ -233,11 +646,9 @@ function detectImageType(buffer: Buffer): { ext: 'png' | 'jpg' | 'webp'; mime: s
   ) {
     return { ext: 'png', mime: 'image/png' };
   }
-  // JPEG: FF D8 FF
   if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
     return { ext: 'jpg', mime: 'image/jpeg' };
   }
-  // WEBP: RIFF....WEBP
   if (
     buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
     buffer.subarray(8, 12).toString('ascii') === 'WEBP'
@@ -247,120 +658,133 @@ function detectImageType(buffer: Buffer): { ext: 'png' | 'jpg' | 'webp'; mime: s
   return null;
 }
 
-function removeOldLogoIfManaged(logoUrl: string | null): void {
-  if (!logoUrl || !logoUrl.startsWith('/api/uploads/')) return;
-  const filename = path.basename(logoUrl);
-  if (!/^[0-9a-f-]+\.(png|jpg|webp)$/i.test(filename)) return;
-  const resolved = path.resolve(UPLOADS_DIR, filename);
-  if (!resolved.startsWith(UPLOADS_DIR + path.sep)) return;
-  if (fs.existsSync(resolved)) {
-    try {
-      fs.unlinkSync(resolved);
-    } catch {
-      // Ignore cleanup failures
-    }
+function hasDisallowedPersonalPayload(body: unknown): boolean {
+  if (body === undefined || body === null) return false;
+  if (typeof body !== 'object' || Array.isArray(body)) return true;
+  const entries = Object.entries(body as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  return true;
+}
+
+function sendErrorResponse(res: Response, err: unknown): void {
+  if (err instanceof RevisionConflictError) {
+    res.status(409).json({ error: err.message });
+    return;
   }
+  if (err instanceof StorageConfigError) {
+    res.status(503).json({ error: err.message });
+    return;
+  }
+  if (err instanceof StorageBackendError) {
+    res.status(502).json({ error: err.message });
+    return;
+  }
+  res.status(500).json({ error: 'Erro interno ao processar a solicitação.' });
 }
 
 async function startServer(): Promise<void> {
   const app = express();
   app.set('trust proxy', 1);
-  app.use(express.json({ limit: '4mb' }));
+  app.use(express.json({ limit: '2.5mb' }));
 
-  // Initialize store on boot
-  loadStore();
+  // Initialize local store only when Supabase is not configured
+  if (!isSupabaseModeActive()) {
+    readLocalEnvelope();
+  }
 
   // Public settings
-  app.get('/api/settings', (_req, res) => {
-    const store = loadStore();
-    res.json(store.settings);
+  app.get('/api/settings', async (_req, res) => {
+    try {
+      const { data } = await readPortalState();
+      res.json(toPublicSettings(data));
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
   });
 
-  // Safe uploaded logo serving
-  app.get('/api/uploads/:filename', (req, res) => {
-    const { filename } = req.params;
-    if (!/^[0-9a-f-]+\.(png|jpg|webp)$/i.test(filename)) {
-      res.status(404).json({ error: 'Arquivo não encontrado.' });
-      return;
+  // Serve persisted logo safely from store
+  app.get('/api/logo', async (_req, res) => {
+    try {
+      const { data } = await readPortalState();
+      if (!data.logo) {
+        res.status(404).json({ error: 'Logo não configurada.' });
+        return;
+      }
+      const buffer = Buffer.from(data.logo.base64, 'base64');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Type', data.logo.mime);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.send(buffer);
+    } catch (err) {
+      sendErrorResponse(res, err);
     }
-    const resolved = path.resolve(UPLOADS_DIR, filename);
-    if (!resolved.startsWith(UPLOADS_DIR + path.sep) || !fs.existsSync(resolved)) {
-      res.status(404).json({ error: 'Arquivo não encontrado.' });
-      return;
-    }
-    const ext = path.extname(filename).toLowerCase();
-    const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Type', mime);
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.sendFile(resolved);
   });
 
-  // Public points consultation submission (strict server-side name & CPF validation)
-  app.post('/api/consultas', (req, res) => {
-    const body = req.body as { fullName?: unknown; cpf?: unknown };
-    const fullNameRaw = typeof body.fullName === 'string' ? body.fullName.trim().replace(/\s+/g, ' ') : '';
-    const cpfRaw = typeof body.cpf === 'string' ? body.cpf : '';
-
-    if (!isValidFullName(fullNameRaw)) {
-      res.status(400).json({ error: 'Informe seu nome completo (nome e sobrenome).' });
+  // Public illustrative points consultation (rejects any personal data, generates server-side fictitious profile)
+  app.post('/api/consultas', async (req, res) => {
+    if (hasDisallowedPersonalPayload(req.body)) {
+      res.status(400).json({
+        error:
+          'Dados pessoais como nome, CPF, e-mail ou telefone não são aceitos nesta consulta. O perfil ilustrativo é gerado automaticamente no servidor.',
+      });
       return;
     }
 
-    if (!isValidCpf(cpfRaw)) {
-      res.status(400).json({ error: 'CPF inválido. Informe um CPF válido com 11 dígitos.' });
-      return;
+    try {
+      const id = crypto.randomUUID();
+      const protocol = `IL-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
+      const profileLabel = FICTITIOUS_PROFILES[crypto.randomInt(0, FICTITIOUS_PROFILES.length)];
+      const referenceCode = `SIM-${crypto.randomInt(100000, 999999)}`;
+      const createdAt = new Date().toISOString();
+
+      const { result: created } = await mutatePortalState((data) => {
+        const pointsAvailable = generateIllustrativePoints(
+          data.settings.minPointsPreview,
+          data.settings.maxPointsPreview,
+        );
+
+        const record: StoredConsulta = {
+          id,
+          protocol,
+          profileLabel,
+          referenceCode,
+          pointsAvailable,
+          status: 'consultado',
+          selectedOptionId: null,
+          selectedOptionTitle: null,
+          createdAt,
+          exchangedAt: null,
+        };
+
+        const nextConsultas = [record, ...data.consultas].slice(0, 250);
+        return {
+          nextData: { ...data, consultas: nextConsultas },
+          result: record,
+        };
+      });
+
+      const claimSecret = process.env.SESSION_SECRET?.trim() || DEV_FALLBACK_SESSION_SECRET;
+      const claimToken = signToken({ role: 'claim', consultaId: created.id }, 3600, claimSecret);
+
+      res.status(201).json({
+        id: created.id,
+        protocol: created.protocol,
+        profileLabel: created.profileLabel,
+        referenceCode: created.referenceCode,
+        pointsAvailable: created.pointsAvailable,
+        status: created.status,
+        selectedOptionTitle: created.selectedOptionTitle,
+        createdAt: created.createdAt,
+        exchangedAt: created.exchangedAt,
+        claimToken,
+      });
+    } catch (err) {
+      sendErrorResponse(res, err);
     }
-
-    const cpfDigits = stripNonDigits(cpfRaw);
-    const store = loadStore();
-
-    const id = crypto.randomUUID();
-    const protocol = `PT-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
-    const pointsAvailable = computeDeterministicPoints(
-      cpfDigits,
-      store.settings.minPointsPreview,
-      store.settings.maxPointsPreview,
-    );
-
-    const record: StoredConsulta = {
-      id,
-      protocol,
-      fullName: fullNameRaw,
-      cpfDigits,
-      cpfFormatted: formatCpf(cpfDigits),
-      pointsAvailable,
-      status: 'consultado',
-      selectedOptionId: null,
-      selectedOptionTitle: null,
-      createdAt: new Date().toISOString(),
-      exchangedAt: null,
-    };
-
-    store.consultas.unshift(record);
-    if (store.consultas.length > 500) {
-      store.consultas = store.consultas.slice(0, 500);
-    }
-    saveStore(store);
-
-    const claimToken = signToken({ role: 'claim', consultaId: id }, 3600);
-
-    res.status(201).json({
-      id: record.id,
-      protocol: record.protocol,
-      fullName: record.fullName,
-      maskedCpf: maskCpf(cpfDigits),
-      pointsAvailable: record.pointsAvailable,
-      status: record.status,
-      selectedOptionTitle: record.selectedOptionTitle,
-      createdAt: record.createdAt,
-      exchangedAt: record.exchangedAt,
-      claimToken,
-    });
   });
 
-  // Confirm exchange for a verified consultation
-  app.patch('/api/consultas/:id/trocar', (req, res) => {
+  // Confirm simulated exchange for a generated consultation
+  app.patch('/api/consultas/:id/trocar', async (req, res) => {
     const { id } = req.params;
     const body = req.body as { optionId?: unknown; claimToken?: unknown };
     if (typeof body.claimToken !== 'string' || typeof body.optionId !== 'string') {
@@ -368,47 +792,83 @@ async function startServer(): Promise<void> {
       return;
     }
 
-    const tokenData = verifyToken(body.claimToken);
+    const claimSecret = process.env.SESSION_SECRET?.trim() || DEV_FALLBACK_SESSION_SECRET;
+    const tokenData = verifyToken(body.claimToken, claimSecret);
     if (!tokenData || tokenData.role !== 'claim' || tokenData.consultaId !== id) {
-      res.status(403).json({ error: 'Sessão de consulta inválida ou expirada. Consulte novamente.' });
+      res.status(403).json({ error: 'Sessão da consulta inválida ou expirada. Gere uma nova consulta.' });
       return;
     }
 
-    const store = loadStore();
-    const option = store.settings.exchangeOptions.find((opt) => opt.id === body.optionId);
-    if (!option) {
-      res.status(400).json({ error: 'Opção de troca inválida.' });
-      return;
+    try {
+      const outcome = await mutatePortalState<{
+        errorStatus?: number;
+        errorMessage?: string;
+        record?: StoredConsulta;
+      }>((data) => {
+        const option = data.settings.exchangeOptions.find((opt) => opt.id === body.optionId);
+        if (!option) {
+          return {
+            nextData: data,
+            result: { errorStatus: 400, errorMessage: 'Opção de troca inválida.' },
+          };
+        }
+
+        const idx = data.consultas.findIndex((c) => c.id === id);
+        if (idx === -1) {
+          return {
+            nextData: data,
+            result: { errorStatus: 404, errorMessage: 'Consulta não encontrada.' },
+          };
+        }
+
+        const updatedRecord: StoredConsulta = {
+          ...data.consultas[idx],
+          status: 'troca_solicitada',
+          selectedOptionId: option.id,
+          selectedOptionTitle: option.title,
+          exchangedAt: new Date().toISOString(),
+        };
+
+        const nextConsultas = [...data.consultas];
+        nextConsultas[idx] = updatedRecord;
+
+        return {
+          nextData: { ...data, consultas: nextConsultas },
+          result: { record: updatedRecord },
+        };
+      });
+
+      if (outcome.result.errorStatus) {
+        res.status(outcome.result.errorStatus).json({ error: outcome.result.errorMessage });
+        return;
+      }
+
+      const updated = outcome.result.record!;
+      res.json({
+        id: updated.id,
+        protocol: updated.protocol,
+        profileLabel: updated.profileLabel,
+        referenceCode: updated.referenceCode,
+        pointsAvailable: updated.pointsAvailable,
+        status: updated.status,
+        selectedOptionTitle: updated.selectedOptionTitle,
+        createdAt: updated.createdAt,
+        exchangedAt: updated.exchangedAt,
+        claimToken: body.claimToken,
+      });
+    } catch (err) {
+      sendErrorResponse(res, err);
     }
-
-    const target = store.consultas.find((c) => c.id === id);
-    if (!target) {
-      res.status(404).json({ error: 'Consulta não encontrada.' });
-      return;
-    }
-
-    target.status = 'troca_solicitada';
-    target.selectedOptionId = option.id;
-    target.selectedOptionTitle = option.title;
-    target.exchangedAt = new Date().toISOString();
-    saveStore(store);
-
-    res.json({
-      id: target.id,
-      protocol: target.protocol,
-      fullName: target.fullName,
-      maskedCpf: maskCpf(target.cpfDigits),
-      pointsAvailable: target.pointsAvailable,
-      status: target.status,
-      selectedOptionTitle: target.selectedOptionTitle,
-      createdAt: target.createdAt,
-      exchangedAt: target.exchangedAt,
-      claimToken: body.claimToken,
-    });
   });
 
   // Admin login
-  app.post('/api/admin/login', (req, res) => {
+  app.post('/api/admin/login', async (req, res) => {
+    const authCfg = getAdminAuthConfig();
+    if (!authCfg.ready) {
+      res.status(503).json({ error: authCfg.error });
+      return;
+    }
+
     const ip = req.ip || 'unknown';
     if (!checkRateLimit(ip)) {
       res.status(429).json({ error: 'Muitas tentativas incorretas. Aguarde alguns minutos.' });
@@ -422,16 +882,20 @@ async function startServer(): Promise<void> {
       return;
     }
 
-    const store = loadStore();
-    if (!verifyPasscode(passcode, store)) {
-      recordFailedLogin(ip);
-      res.status(401).json({ error: 'Senha incorreta. Tente novamente.' });
-      return;
-    }
+    try {
+      const { data } = await readPortalState();
+      if (!verifyPasscode(passcode, data, authCfg.envPasscode)) {
+        recordFailedLogin(ip);
+        res.status(401).json({ error: 'Senha incorreta. Tente novamente.' });
+        return;
+      }
 
-    clearLoginAttempts(ip);
-    const token = signToken({ role: 'admin' }, 60 * 60 * 8);
-    res.json({ token, expiresInSeconds: 60 * 60 * 8 });
+      clearLoginAttempts(ip);
+      const token = signToken({ role: 'admin' }, 60 * 60 * 8, authCfg.sessionSecret);
+      res.json({ token, expiresInSeconds: 60 * 60 * 8 });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
   });
 
   // Admin session check
@@ -440,63 +904,73 @@ async function startServer(): Promise<void> {
   });
 
   // Admin update branding & form settings
-  app.put('/api/admin/settings', requireAdminAuth, (req, res) => {
+  app.put('/api/admin/settings', requireAdminAuth, async (req, res) => {
     const body = req.body as Partial<SiteSettings>;
-    const store = loadStore();
-
-    const brandName =
-      typeof body.brandName === 'string' ? body.brandName.trim().slice(0, 60) : store.settings.brandName;
-    if (brandName.length < 2) {
+    if (typeof body.brandName === 'string' && body.brandName.trim().length < 2) {
       res.status(400).json({ error: 'O nome personalizado deve ter pelo menos 2 caracteres.' });
       return;
     }
 
-    const heroTitle =
-      typeof body.heroTitle === 'string' && body.heroTitle.trim().length >= 4
-        ? body.heroTitle.trim().slice(0, 120)
-        : store.settings.heroTitle;
+    try {
+      const { data } = await mutatePortalState((current) => {
+        const brandName =
+          typeof body.brandName === 'string'
+            ? body.brandName.trim().slice(0, 60)
+            : current.settings.brandName;
 
-    const heroSubtitle =
-      typeof body.heroSubtitle === 'string' && body.heroSubtitle.trim().length >= 4
-        ? body.heroSubtitle.trim().slice(0, 260)
-        : store.settings.heroSubtitle;
+        const heroTitle =
+          typeof body.heroTitle === 'string' && body.heroTitle.trim().length >= 4
+            ? body.heroTitle.trim().slice(0, 120)
+            : current.settings.heroTitle;
 
-    const formHeading =
-      typeof body.formHeading === 'string' && body.formHeading.trim().length >= 4
-        ? body.formHeading.trim().slice(0, 100)
-        : store.settings.formHeading;
+        const heroSubtitle =
+          typeof body.heroSubtitle === 'string' && body.heroSubtitle.trim().length >= 4
+            ? body.heroSubtitle.trim().slice(0, 260)
+            : current.settings.heroSubtitle;
 
-    const pointsLabel =
-      typeof body.pointsLabel === 'string' && body.pointsLabel.trim().length >= 2
-        ? body.pointsLabel.trim().slice(0, 40)
-        : store.settings.pointsLabel;
+        const formHeading =
+          typeof body.formHeading === 'string' && body.formHeading.trim().length >= 4
+            ? body.formHeading.trim().slice(0, 100)
+            : current.settings.formHeading;
 
-    let minPointsPreview = store.settings.minPointsPreview;
-    let maxPointsPreview = store.settings.maxPointsPreview;
-    if (typeof body.minPointsPreview === 'number' && Number.isFinite(body.minPointsPreview)) {
-      minPointsPreview = Math.max(100, Math.min(1000000, Math.round(body.minPointsPreview)));
+        const pointsLabel =
+          typeof body.pointsLabel === 'string' && body.pointsLabel.trim().length >= 2
+            ? body.pointsLabel.trim().slice(0, 40)
+            : current.settings.pointsLabel;
+
+        let minPointsPreview = current.settings.minPointsPreview;
+        let maxPointsPreview = current.settings.maxPointsPreview;
+        if (typeof body.minPointsPreview === 'number' && Number.isFinite(body.minPointsPreview)) {
+          minPointsPreview = Math.max(100, Math.min(1000000, Math.round(body.minPointsPreview)));
+        }
+        if (typeof body.maxPointsPreview === 'number' && Number.isFinite(body.maxPointsPreview)) {
+          maxPointsPreview = Math.max(minPointsPreview, Math.min(1000000, Math.round(body.maxPointsPreview)));
+        }
+
+        const nextData: PortalDataPayload = {
+          ...current,
+          settings: {
+            ...current.settings,
+            brandName,
+            heroTitle,
+            heroSubtitle,
+            formHeading,
+            pointsLabel,
+            minPointsPreview,
+            maxPointsPreview,
+          },
+        };
+        return { nextData, result: null };
+      });
+
+      res.json(toPublicSettings(data));
+    } catch (err) {
+      sendErrorResponse(res, err);
     }
-    if (typeof body.maxPointsPreview === 'number' && Number.isFinite(body.maxPointsPreview)) {
-      maxPointsPreview = Math.max(minPointsPreview, Math.min(1000000, Math.round(body.maxPointsPreview)));
-    }
-
-    store.settings = {
-      ...store.settings,
-      brandName,
-      heroTitle,
-      heroSubtitle,
-      formHeading,
-      pointsLabel,
-      minPointsPreview,
-      maxPointsPreview,
-    };
-
-    saveStore(store);
-    res.json(store.settings);
   });
 
-  // Admin upload custom logo (validated base64 dataUrl with magic byte verification)
-  app.post('/api/admin/logo', requireAdminAuth, (req, res) => {
+  // Admin upload custom logo (stored inside portal_store.data with magic-byte verification)
+  app.post('/api/admin/logo', requireAdminAuth, async (req, res) => {
     const body = req.body as { dataUrl?: unknown };
     if (typeof body.dataUrl !== 'string') {
       res.status(400).json({ error: 'Envie uma imagem válida.' });
@@ -510,8 +984,8 @@ async function startServer(): Promise<void> {
     }
 
     const buffer = Buffer.from(match[2], 'base64');
-    if (buffer.length === 0 || buffer.length > 2.5 * 1024 * 1024) {
-      res.status(400).json({ error: 'A imagem deve ter no máximo 2,5 MB.' });
+    if (buffer.length === 0 || buffer.length > 1.5 * 1024 * 1024) {
+      res.status(400).json({ error: 'A imagem deve ter no máximo 1,5 MB.' });
       return;
     }
 
@@ -521,90 +995,113 @@ async function startServer(): Promise<void> {
       return;
     }
 
-    const filename = `${crypto.randomUUID()}.${detected.ext}`;
-    const resolved = path.resolve(UPLOADS_DIR, filename);
-    if (!resolved.startsWith(UPLOADS_DIR + path.sep)) {
-      res.status(400).json({ error: 'Caminho de arquivo inválido.' });
-      return;
+    try {
+      const nextLogo: StoredLogo = {
+        mime: detected.mime,
+        base64: buffer.toString('base64'),
+        revision: Date.now(),
+      };
+
+      const { data } = await mutatePortalState((current) => ({
+        nextData: { ...current, logo: nextLogo },
+        result: null,
+      }));
+
+      const publicSettings = toPublicSettings(data);
+      res.json({ brandLogoUrl: publicSettings.brandLogoUrl, settings: publicSettings });
+    } catch (err) {
+      sendErrorResponse(res, err);
     }
-
-    ensureDirs();
-    fs.writeFileSync(resolved, buffer);
-
-    const store = loadStore();
-    removeOldLogoIfManaged(store.settings.brandLogoUrl);
-    store.settings.brandLogoUrl = `/api/uploads/${filename}`;
-    saveStore(store);
-
-    res.json({ brandLogoUrl: store.settings.brandLogoUrl, settings: store.settings });
   });
 
   // Admin remove custom logo
-  app.delete('/api/admin/logo', requireAdminAuth, (_req, res) => {
-    const store = loadStore();
-    removeOldLogoIfManaged(store.settings.brandLogoUrl);
-    store.settings.brandLogoUrl = null;
-    saveStore(store);
-    res.json({ brandLogoUrl: null, settings: store.settings });
+  app.delete('/api/admin/logo', requireAdminAuth, async (_req, res) => {
+    try {
+      const { data } = await mutatePortalState((current) => ({
+        nextData: { ...current, logo: null },
+        result: null,
+      }));
+      const publicSettings = toPublicSettings(data);
+      res.json({ brandLogoUrl: null, settings: publicSettings });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
   });
 
-  // Admin change passcode
-  app.put('/api/admin/passcode', requireAdminAuth, (req, res) => {
+  // Admin change passcode (local dev only when ADMIN_PASSCODE env is not set)
+  app.put('/api/admin/passcode', requireAdminAuth, async (req, res) => {
+    if (isSupabaseModeActive() || process.env.ADMIN_PASSCODE?.trim()) {
+      res.status(400).json({
+        error: 'A senha é gerenciada pela variável de ambiente ADMIN_PASSCODE em Settings > Secrets.',
+      });
+      return;
+    }
+
     const body = req.body as { currentPasscode?: unknown; newPasscode?: unknown };
     const currentPasscode = typeof body.currentPasscode === 'string' ? body.currentPasscode.trim() : '';
     const newPasscode = typeof body.newPasscode === 'string' ? body.newPasscode.trim() : '';
-
-    if (process.env.ADMIN_PASSCODE?.trim()) {
-      res.status(400).json({ error: 'A senha é gerenciada pela variável de ambiente ADMIN_PASSCODE.' });
-      return;
-    }
 
     if (newPasscode.length < 4 || newPasscode.length > 64) {
       res.status(400).json({ error: 'A nova senha deve ter entre 4 e 64 caracteres.' });
       return;
     }
 
-    const store = loadStore();
-    if (!verifyPasscode(currentPasscode, store)) {
-      res.status(400).json({ error: 'Senha atual incorreta.' });
-      return;
-    }
+    try {
+      const outcome = await mutatePortalState<{ ok: boolean }>((current) => {
+        if (!verifyPasscode(currentPasscode, current, '')) {
+          return { nextData: current, result: { ok: false } };
+        }
+        return {
+          nextData: { ...current, adminPasscodeHash: hashPasscode(newPasscode) },
+          result: { ok: true },
+        };
+      });
 
-    store.adminPasscodeHash = hashPasscode(newPasscode);
-    saveStore(store);
-    res.json({ updated: true });
+      if (!outcome.result.ok) {
+        res.status(400).json({ error: 'Senha atual incorreta.' });
+        return;
+      }
+
+      res.json({ updated: true });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
   });
 
   // Admin list consultations
-  app.get('/api/admin/consultas', requireAdminAuth, (_req, res) => {
-    const store = loadStore();
-    const list: ConsultaAdminRecord[] = store.consultas.map((c) => ({
-      id: c.id,
-      protocol: c.protocol,
-      fullName: c.fullName,
-      cpfFormatted: c.cpfFormatted,
-      pointsAvailable: c.pointsAvailable,
-      status: c.status,
-      selectedOptionId: c.selectedOptionId,
-      selectedOptionTitle: c.selectedOptionTitle,
-      createdAt: c.createdAt,
-      exchangedAt: c.exchangedAt,
-    }));
-    res.json({ consultas: list });
+  app.get('/api/admin/consultas', requireAdminAuth, async (_req, res) => {
+    try {
+      const { data } = await readPortalState();
+      res.json({ consultas: data.consultas });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
   });
 
   // Admin delete consultation
-  app.delete('/api/admin/consultas/:id', requireAdminAuth, (req, res) => {
+  app.delete('/api/admin/consultas/:id', requireAdminAuth, async (req, res) => {
     const { id } = req.params;
-    const store = loadStore();
-    const nextList = store.consultas.filter((c) => c.id !== id);
-    if (nextList.length === store.consultas.length) {
-      res.status(404).json({ error: 'Registro não encontrado.' });
-      return;
+    try {
+      const outcome = await mutatePortalState<{ deleted: boolean }>((current) => {
+        const nextList = current.consultas.filter((c) => c.id !== id);
+        if (nextList.length === current.consultas.length) {
+          return { nextData: current, result: { deleted: false } };
+        }
+        return {
+          nextData: { ...current, consultas: nextList },
+          result: { deleted: true },
+        };
+      });
+
+      if (!outcome.result.deleted) {
+        res.status(404).json({ error: 'Registro não encontrado.' });
+        return;
+      }
+
+      res.json({ deleted: true });
+    } catch (err) {
+      sendErrorResponse(res, err);
     }
-    store.consultas = nextList;
-    saveStore(store);
-    res.json({ deleted: true });
   });
 
   // JSON 404 for unmatched /api/* routes

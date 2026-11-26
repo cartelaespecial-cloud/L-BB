@@ -8,28 +8,28 @@ const FALLBACK_SETTINGS: SiteSettings = {
   brandLogoUrl: null,
   heroTitle: 'Vamos verificar se você tem pontos disponíveis',
   heroSubtitle:
-    'Consulte agora seu saldo vinculado ao CPF e solicite a troca dos seus pontos por benefícios, créditos ou descontos.',
+    'Explore a consulta demonstrativa com perfil fictício gerado automaticamente e simule a troca dos pontos por benefícios.',
   formHeading: 'Vamos trocar eles em pontos',
-  pointsLabel: 'pontos disponíveis',
+  pointsLabel: 'pontos ilustrativos',
   minPointsPreview: 1250,
   maxPointsPreview: 4850,
   exchangeOptions: [
     {
       id: 'credito-fatura',
       title: 'Crédito em Fatura ou Desconto',
-      description: 'Abatimento direto em compras e faturas participantes',
+      description: 'Simulação de abatimento direto em compras participantes',
       rateLabel: '1.000 pts = R$ 50,00',
     },
     {
       id: 'vale-compras',
       title: 'Vale-Compras Digital',
-      description: 'Voucher imediato para lojas e parceiros credenciados',
+      description: 'Simulação de voucher para lojas e parceiros credenciados',
       rateLabel: '1.000 pts = R$ 45,00',
     },
     {
       id: 'cashback-conta',
       title: 'Transferência para Conta',
-      description: 'Conversão em saldo disponível via chave cadastrada',
+      description: 'Simulação de conversão em saldo demonstrativo',
       rateLabel: '1.000 pts = R$ 40,00',
     },
   ],
@@ -43,6 +43,7 @@ function normalizePath(pathname: string): string {
 export default function App() {
   const [pathname, setPathname] = useState<string>(() => normalizePath(window.location.pathname));
   const [settings, setSettings] = useState<SiteSettings>(FALLBACK_SETTINGS);
+  const [storageError, setStorageError] = useState<string | null>(null);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [adminToken, setAdminToken] = useState<string | null>(null);
 
@@ -66,14 +67,29 @@ export default function App() {
   useEffect(() => {
     let active = true;
     fetch('/api/settings')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: SiteSettings | null) => {
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          throw new Error(
+            data && typeof data.error === 'string'
+              ? data.error
+              : 'Falha ao carregar configurações persistidas.',
+          );
+        }
+        return data as SiteSettings | null;
+      })
+      .then((data) => {
         if (active && data && typeof data.brandName === 'string') {
           setSettings(data);
+          setStorageError(null);
         }
       })
-      .catch(() => {
-        // Use fallback settings if server is unreachable
+      .catch((err: unknown) => {
+        if (active) {
+          setStorageError(
+            err instanceof Error ? err.message : 'Falha ao conectar ao armazenamento.',
+          );
+        }
       })
       .finally(() => {
         if (active) setLoadingSettings(false);
@@ -112,5 +128,11 @@ export default function App() {
     );
   }
 
-  return <PublicPortal settings={settings} onNavigate={navigate} />;
+  return (
+    <PublicPortal
+      settings={settings}
+      storageError={storageError}
+      onNavigate={navigate}
+    />
+  );
 }

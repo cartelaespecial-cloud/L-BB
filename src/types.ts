@@ -15,6 +15,7 @@ export interface SiteSettings {
   minPointsPreview: number;
   maxPointsPreview: number;
   exchangeOptions: ExchangeOption[];
+  passcodeManagedByEnv?: boolean;
 }
 
 export type ConsultaStatus = 'consultado' | 'troca_solicitada';
@@ -22,8 +23,8 @@ export type ConsultaStatus = 'consultado' | 'troca_solicitada';
 export interface ConsultaPublicResult {
   id: string;
   protocol: string;
-  fullName: string;
-  maskedCpf: string;
+  profileLabel: string;
+  referenceCode: string;
   pointsAvailable: number;
   status: ConsultaStatus;
   selectedOptionTitle: string | null;
@@ -35,8 +36,8 @@ export interface ConsultaPublicResult {
 export interface ConsultaAdminRecord {
   id: string;
   protocol: string;
-  fullName: string;
-  cpfFormatted: string;
+  profileLabel: string;
+  referenceCode: string;
   pointsAvailable: number;
   status: ConsultaStatus;
   selectedOptionId: string | null;

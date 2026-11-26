@@ -210,8 +210,8 @@ export function AdminPanel({
       setLogoFeedback({ type: 'err', text: 'Formato inválido. Selecione uma imagem PNG, JPG ou WEBP.' });
       return;
     }
-    if (file.size > 2.5 * 1024 * 1024) {
-      setLogoFeedback({ type: 'err', text: 'A imagem deve ter no máximo 2,5 MB.' });
+    if (file.size > 1.5 * 1024 * 1024) {
+      setLogoFeedback({ type: 'err', text: 'A imagem deve ter no máximo 1,5 MB.' });
       return;
     }
 
@@ -245,7 +245,7 @@ export function AdminPanel({
       }
 
       onSettingsUpdated(data.settings as SiteSettings);
-      setLogoFeedback({ type: 'ok', text: 'Logo enviada e atualizada no site.' });
+      setLogoFeedback({ type: 'ok', text: 'Logo enviada e persistida no armazenamento.' });
     } catch {
       setLogoFeedback({ type: 'err', text: 'Não foi possível enviar a imagem.' });
     } finally {
@@ -297,6 +297,7 @@ export function AdminPanel({
 
   async function handleDeleteConsulta(id: string): Promise<void> {
     if (!adminToken) return;
+    setConsultasError(null);
     try {
       const response = await fetch(`/api/admin/consultas/${encodeURIComponent(id)}`, {
         method: 'DELETE',
@@ -306,22 +307,33 @@ export function AdminPanel({
         onLogout();
         return;
       }
-      if (response.ok) {
-        setConsultas((prev) => prev.filter((item) => item.id !== id));
+      const data = await response.json();
+      if (!response.ok) {
+        setConsultasError(data.error || 'Não foi possível remover o registro.');
+        return;
       }
+      setConsultas((prev) => prev.filter((item) => item.id !== id));
     } catch {
-      // Ignore transient error
+      setConsultasError('Erro de conexão ao remover o registro.');
     }
   }
 
   function handleExportCsv(): void {
-    const headers = ['Protocolo', 'Nome Completo', 'CPF', 'Pontos', 'Status', 'Modalidade', 'Data Consulta'];
+    const headers = [
+      'Protocolo',
+      'Perfil Ilustrativo',
+      'Referência',
+      'Pontos Ilustrativos',
+      'Status',
+      'Modalidade Simulada',
+      'Data Consulta',
+    ];
     const rows = filteredConsultas.map((c) => [
       escapeCsvCell(c.protocol),
-      escapeCsvCell(c.fullName),
-      escapeCsvCell(c.cpfFormatted),
+      escapeCsvCell(c.profileLabel),
+      escapeCsvCell(c.referenceCode),
       escapeCsvCell(c.pointsAvailable),
-      escapeCsvCell(c.status === 'troca_solicitada' ? 'Troca solicitada' : 'Consultado'),
+      escapeCsvCell(c.status === 'troca_solicitada' ? 'Troca simulada' : 'Consultado'),
       escapeCsvCell(c.selectedOptionTitle || '-'),
       escapeCsvCell(new Date(c.createdAt).toLocaleString('pt-BR')),
     ]);
@@ -331,7 +343,7 @@ export function AdminPanel({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `consultas-pontos-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `consultas-ilustrativas-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -415,7 +427,7 @@ export function AdminPanel({
               Painel Administrativo
             </h1>
             <p className="text-sm text-slate-600 mb-6">
-              Informe a senha de administrador para personalizar o nome, subir a logo e gerenciar as consultas.
+              Informe a senha de administrador para personalizar o nome, subir a logo e gerenciar as consultas ilustrativas.
             </p>
 
             <form onSubmit={handleLoginSubmit} className="space-y-4">
@@ -451,9 +463,9 @@ export function AdminPanel({
               {loginError && (
                 <div
                   role="alert"
-                  className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 flex items-center gap-2"
+                  className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 flex items-start gap-2"
                 >
-                  <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
                   <span>{loginError}</span>
                 </div>
               )}
@@ -477,8 +489,8 @@ export function AdminPanel({
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase().trim();
     return (
-      item.fullName.toLowerCase().includes(q) ||
-      item.cpfFormatted.includes(q) ||
+      item.profileLabel.toLowerCase().includes(q) ||
+      item.referenceCode.toLowerCase().includes(q) ||
       item.protocol.toLowerCase().includes(q)
     );
   });
@@ -489,7 +501,7 @@ export function AdminPanel({
 
   const tabTitles: Record<AdminTab, string> = {
     marca: 'Identidade e Logo',
-    consultas: 'Consultas e Trocas',
+    consultas: 'Consultas e Trocas Simuladas',
     seguranca: 'Segurança e Senha',
   };
 
@@ -529,7 +541,7 @@ export function AdminPanel({
             }`}
           >
             <FileSpreadsheet className="w-4 h-4 shrink-0" aria-hidden="true" />
-            <span>Consultas de CPF</span>
+            <span>Consultas Simuladas</span>
           </button>
 
           <button
@@ -603,7 +615,7 @@ export function AdminPanel({
                   Logo personalizada
                 </h2>
                 <p className="text-sm text-slate-600 mb-5">
-                  Envie a imagem da sua marca em PNG, JPG ou WEBP (até 2,5 MB). Ela aparecerá automaticamente no cabeçalho e no rodapé do site.
+                  Envie a imagem da sua marca em PNG, JPG ou WEBP (até 1,5 MB). Ela aparecerá automaticamente no cabeçalho e no rodapé do site.
                 </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
@@ -649,7 +661,7 @@ export function AdminPanel({
                         Arraste a imagem aqui ou clique para escolher
                       </p>
                       <p className="text-xs text-slate-500 mb-4">
-                        PNG, JPG ou WEBP · Máximo 2,5 MB
+                        PNG, JPG ou WEBP · Máximo 1,5 MB
                       </p>
                       <div className="flex flex-wrap items-center justify-center gap-3">
                         <button
@@ -700,7 +712,7 @@ export function AdminPanel({
                   Nome do site e textos do formulário
                 </h2>
                 <p className="text-sm text-slate-600 mb-6">
-                  Personalize o nome exibido em todo o portal e os textos exibidos aos clientes.
+                  Personalize o nome exibido em todo o portal e os textos exibidos aos visitantes.
                 </p>
 
                 <form onSubmit={handleSaveSettings} className="space-y-5">
@@ -845,22 +857,26 @@ export function AdminPanel({
           {/* TAB 2: CONSULTAS */}
           {activeTab === 'consultas' && (
             <div className="space-y-6">
+              <p className="text-xs font-medium text-amber-800">
+                Perfis fictícios gerados no servidor · Saldo ilustrativo · sem valor para resgate
+              </p>
+
               {/* Metrics Strip */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs font-medium text-slate-500 mb-1">Consultas realizadas</p>
+                  <p className="text-xs font-medium text-slate-500 mb-1">Consultas geradas</p>
                   <p className="font-display text-2xl font-bold text-slate-950 tabular-nums">
                     {totalConsultas.toLocaleString('pt-BR')}
                   </p>
                 </div>
                 <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs font-medium text-slate-500 mb-1">Trocas solicitadas</p>
+                  <p className="text-xs font-medium text-slate-500 mb-1">Trocas simuladas</p>
                   <p className="font-display text-2xl font-bold text-emerald-700 tabular-nums">
                     {totalTrocas.toLocaleString('pt-BR')}
                   </p>
                 </div>
                 <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs font-medium text-slate-500 mb-1">Pontos apurados</p>
+                  <p className="text-xs font-medium text-slate-500 mb-1">Pontos ilustrativos</p>
                   <p className="font-display text-2xl font-bold text-slate-950 tabular-nums">
                     {totalPontos.toLocaleString('pt-BR')}
                   </p>
@@ -876,7 +892,7 @@ export function AdminPanel({
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Buscar por nome, CPF ou protocolo..."
+                      placeholder="Buscar por perfil, referência ou protocolo..."
                       className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-blue-800"
                     />
                   </div>
@@ -887,7 +903,7 @@ export function AdminPanel({
                         [
                           ['todas', 'Todas'],
                           ['consultado', 'Consultado'],
-                          ['troca_solicitada', 'Troca solicitada'],
+                          ['troca_solicitada', 'Troca simulada'],
                         ] as const
                       ).map(([val, label]) => (
                         <button
@@ -930,7 +946,7 @@ export function AdminPanel({
                     </p>
                     <p className="text-xs text-slate-500">
                       {consultas.length === 0
-                        ? 'As consultas enviadas pelo formulário público aparecerão aqui.'
+                        ? 'As consultas ilustrativas geradas no portal aparecerão aqui.'
                         : 'Ajuste os filtros ou a busca para visualizar outros registros.'}
                     </p>
                   </div>
@@ -940,8 +956,8 @@ export function AdminPanel({
                       <thead>
                         <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-600">
                           <th className="py-3 px-4">Protocolo</th>
-                          <th className="py-3 px-4">Nome completo</th>
-                          <th className="py-3 px-4">CPF</th>
+                          <th className="py-3 px-4">Perfil ilustrativo</th>
+                          <th className="py-3 px-4">Referência</th>
                           <th className="py-3 px-4 text-right">Pontos</th>
                           <th className="py-3 px-4">Status / Modalidade</th>
                           <th className="py-3 px-4">Data</th>
@@ -955,10 +971,10 @@ export function AdminPanel({
                               {row.protocol}
                             </td>
                             <td className="py-3 px-4 font-medium text-slate-900">
-                              {row.fullName}
+                              {row.profileLabel}
                             </td>
                             <td className="py-3 px-4 font-mono text-xs text-slate-700 tabular-nums whitespace-nowrap">
-                              {row.cpfFormatted}
+                              {row.referenceCode}
                             </td>
                             <td className="py-3 px-4 font-mono text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap">
                               {row.pointsAvailable.toLocaleString('pt-BR')}
@@ -966,7 +982,7 @@ export function AdminPanel({
                             <td className="py-3 px-4">
                               {row.status === 'troca_solicitada' ? (
                                 <div className="text-xs">
-                                  <span className="font-semibold text-emerald-700">Troca solicitada</span>
+                                  <span className="font-semibold text-emerald-700">Troca simulada</span>
                                   {row.selectedOptionTitle && (
                                     <span className="block text-slate-500">{row.selectedOptionTitle}</span>
                                   )}
@@ -984,7 +1000,7 @@ export function AdminPanel({
                               <button
                                 type="button"
                                 onClick={() => handleDeleteConsulta(row.id)}
-                                aria-label={`Excluir registro de ${row.fullName}`}
+                                aria-label={`Excluir registro ${row.protocol}`}
                                 className="p-1.5 text-slate-400 hover:text-red-700 rounded transition-colors cursor-pointer"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -1004,83 +1020,94 @@ export function AdminPanel({
           {activeTab === 'seguranca' && (
             <section className="bg-white border border-slate-200 rounded-xl p-6 max-w-xl">
               <h2 className="font-display text-lg font-bold text-slate-950 mb-1">
-                Alterar senha do painel
+                Senha do painel administrativo
               </h2>
-              <p className="text-sm text-slate-600 mb-6">
-                Atualize a senha usada para entrar no endereço <span className="font-mono">/painel</span>.
-              </p>
 
-              <form onSubmit={handleUpdatePasscode} className="space-y-4">
-                <div>
-                  <label htmlFor="currentPasscode" className="block text-sm font-medium text-slate-800 mb-1.5">
-                    Senha atual
-                  </label>
-                  <input
-                    id="currentPasscode"
-                    type="password"
-                    required
-                    value={currentPasscode}
-                    onChange={(e) => setCurrentPasscode(e.target.value)}
-                    className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
-                  />
+              {settings.passcodeManagedByEnv ? (
+                <div className="mt-4 p-4 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-700 leading-relaxed">
+                  A autenticação deste ambiente é gerenciada pela variável privada{' '}
+                  <span className="font-mono font-semibold text-slate-900">ADMIN_PASSCODE</span> em{' '}
+                  <strong>Settings &gt; Secrets</strong>. Para alterar a senha, atualize o segredo diretamente no painel de configurações do projeto.
                 </div>
+              ) : (
+                <>
+                  <p className="text-sm text-slate-600 mb-6">
+                    Atualize a senha usada para entrar no endereço <span className="font-mono">/painel</span> em modo local.
+                  </p>
 
-                <div>
-                  <label htmlFor="newPasscode" className="block text-sm font-medium text-slate-800 mb-1.5">
-                    Nova senha
-                  </label>
-                  <input
-                    id="newPasscode"
-                    type="password"
-                    required
-                    minLength={4}
-                    value={newPasscode}
-                    onChange={(e) => setNewPasscode(e.target.value)}
-                    className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
-                  />
-                </div>
+                  <form onSubmit={handleUpdatePasscode} className="space-y-4">
+                    <div>
+                      <label htmlFor="currentPasscode" className="block text-sm font-medium text-slate-800 mb-1.5">
+                        Senha atual
+                      </label>
+                      <input
+                        id="currentPasscode"
+                        type="password"
+                        required
+                        value={currentPasscode}
+                        onChange={(e) => setCurrentPasscode(e.target.value)}
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                      />
+                    </div>
 
-                <div>
-                  <label htmlFor="confirmPasscode" className="block text-sm font-medium text-slate-800 mb-1.5">
-                    Confirmar nova senha
-                  </label>
-                  <input
-                    id="confirmPasscode"
-                    type="password"
-                    required
-                    minLength={4}
-                    value={confirmPasscode}
-                    onChange={(e) => setConfirmPasscode(e.target.value)}
-                    className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
-                  />
-                </div>
+                    <div>
+                      <label htmlFor="newPasscode" className="block text-sm font-medium text-slate-800 mb-1.5">
+                        Nova senha
+                      </label>
+                      <input
+                        id="newPasscode"
+                        type="password"
+                        required
+                        minLength={4}
+                        value={newPasscode}
+                        onChange={(e) => setNewPasscode(e.target.value)}
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                      />
+                    </div>
 
-                {passcodeFeedback && (
-                  <div
-                    role="status"
-                    className={`p-3 rounded-lg border text-xs sm:text-sm flex items-center gap-2 ${
-                      passcodeFeedback.type === 'ok'
-                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                        : 'bg-red-50 border-red-200 text-red-800'
-                    }`}
-                  >
-                    {passcodeFeedback.type === 'ok' ? (
-                      <CheckCircle2 className="w-4 h-4 shrink-0" />
-                    ) : (
-                      <AlertCircle className="w-4 h-4 shrink-0" />
+                    <div>
+                      <label htmlFor="confirmPasscode" className="block text-sm font-medium text-slate-800 mb-1.5">
+                        Confirmar nova senha
+                      </label>
+                      <input
+                        id="confirmPasscode"
+                        type="password"
+                        required
+                        minLength={4}
+                        value={confirmPasscode}
+                        onChange={(e) => setConfirmPasscode(e.target.value)}
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                      />
+                    </div>
+
+                    {passcodeFeedback && (
+                      <div
+                        role="status"
+                        className={`p-3 rounded-lg border text-xs sm:text-sm flex items-center gap-2 ${
+                          passcodeFeedback.type === 'ok'
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                            : 'bg-red-50 border-red-200 text-red-800'
+                        }`}
+                      >
+                        {passcodeFeedback.type === 'ok' ? (
+                          <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 shrink-0" />
+                        )}
+                        <span>{passcodeFeedback.text}</span>
+                      </div>
                     )}
-                    <span>{passcodeFeedback.text}</span>
-                  </div>
-                )}
 
-                <button
-                  type="submit"
-                  disabled={savingPasscode}
-                  className="h-11 px-6 bg-blue-800 hover:bg-blue-900 disabled:bg-blue-800/60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
-                >
-                  {savingPasscode ? 'Atualizando...' : 'Atualizar senha'}
-                </button>
-              </form>
+                    <button
+                      type="submit"
+                      disabled={savingPasscode}
+                      className="h-11 px-6 bg-blue-800 hover:bg-blue-900 disabled:bg-blue-800/60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+                    >
+                      {savingPasscode ? 'Atualizando...' : 'Atualizar senha'}
+                    </button>
+                  </form>
+                </>
+              )}
             </section>
           )}
         </main>
