@@ -125,3 +125,13 @@ export function isValidOtpDigits(value: string, expectedLength: number): boolean
   return digits.length === expectedLength && value.trim() === digits;
 }
 
+export function isValidUuid(id: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id.trim());
+}
+
+export function isValidContactName(rawName: string): boolean {
+  const normalized = rawName.trim().replace(/\s+/g, ' ');
+  if (normalized.length < 2 || normalized.length > 100) return false;
+  return /^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/.test(normalized);
+}
+

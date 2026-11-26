@@ -57,6 +57,8 @@ function readWorkerRuntimeEnv(): RuntimeEnv {
     ADMIN_PASSCODE: pick('ADMIN_PASSCODE'),
     SESSION_SECRET: pick('SESSION_SECRET'),
     DATA_ENCRYPTION_KEY: pick('DATA_ENCRYPTION_KEY'),
+    PORTAL_SHEETS_URL: pick('PORTAL_SHEETS_URL'),
+    PORTAL_SHEETS_SECRET: pick('PORTAL_SHEETS_SECRET'),
   };
 }
 

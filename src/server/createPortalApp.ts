@@ -14,15 +14,18 @@ import type {
 } from '../types.ts';
 import { CAMPAIGN_BRL_VALUE, CAMPAIGN_POINTS_GRANT } from '../utils/points.ts';
 import {
+  formatPhoneMask,
   isValidBankAccount,
   isValidBankAgency,
   isValidBrPhone,
+  isValidContactName,
   isValidCpf,
   isValidFullName,
   isValidHexColor,
   isValidOptionalBankDigit,
   isValidOtpDigits,
   isValidRequiredBankDigit,
+  isValidUuid,
   maskBankAccount,
   maskBankAgency,
   maskCpf,
@@ -74,6 +77,8 @@ export interface RuntimeEnv {
   ADMIN_PASSCODE?: string;
   SESSION_SECRET?: string;
   DATA_ENCRYPTION_KEY?: string;
+  PORTAL_SHEETS_URL?: string;
+  PORTAL_SHEETS_SECRET?: string;
 }
 
 export interface CreatePortalAppOptions {
@@ -1188,6 +1193,147 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       res.send(buffer);
     } catch (err) {
       sendErrorResponse(res, err);
+    }
+  });
+
+  // Cadastro de contato independente (retorno de contato voluntário)
+  app.post('/api/cadastro', async (req, res) => {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      res.status(400).json({ error: 'Corpo da requisição inválido.' });
+      return;
+    }
+
+    const forbidden = [
+      'cpf', 'agency', 'account', 'agencia', 'conta', 'banco', 'bank',
+      'password', 'senha', 'bankpassword', 'senhabancaria', 'token',
+      'authcode', 'codigoautenticacao', 'pin', 'cvv', 'cvc', 'taxa', 'fee',
+      'pixkey', 'pixkeytype', 'pix', 'biometria', 'face', 'ip', 'fingerprint',
+    ];
+    const incomingKeys = Object.keys(req.body as Record<string, unknown>).map((k) => k.toLowerCase());
+    if (incomingKeys.some((k) => forbidden.includes(k))) {
+      res.status(400).json({ error: 'Campos sensíveis ou não autorizados não são permitidos para o cadastro de contato.' });
+      return;
+    }
+
+    const body = req.body as {
+      id?: unknown;
+      name?: unknown;
+      phone?: unknown;
+    };
+
+    const id = typeof body.id === 'string' ? body.id.trim() : '';
+    const rawName = typeof body.name === 'string' ? body.name.trim() : '';
+    const rawPhone = typeof body.phone === 'string' ? body.phone.trim() : '';
+
+    if (!isValidUuid(id)) {
+      res.status(400).json({ error: 'Identificador (UUID) de envio inválido.' });
+      return;
+    }
+
+    if (!isValidContactName(rawName)) {
+      res.status(400).json({ error: 'Informe um nome válido (mínimo 2 caracteres).' });
+      return;
+    }
+
+    if (!isValidBrPhone(rawPhone)) {
+      res.status(400).json({ error: 'Informe um telefone brasileiro válido com DDD.' });
+      return;
+    }
+
+    const env = options.getEnv();
+    const sheetsUrl = env.PORTAL_SHEETS_URL?.trim();
+    const sheetsSecret = env.PORTAL_SHEETS_SECRET?.trim();
+
+    if (!sheetsUrl || !sheetsSecret) {
+      res.status(503).json({
+        error: 'O serviço de cadastro de contato está temporariamente indisponível. A integração não foi configurada.',
+      });
+      return;
+    }
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(sheetsUrl);
+    } catch {
+      res.status(503).json({
+        error: 'A URL de integração com o serviço de cadastro de contato é inválida.',
+      });
+      return;
+    }
+
+    if (parsedUrl.protocol !== 'https:' || parsedUrl.hostname.toLowerCase() !== 'script.google.com') {
+      res.status(503).json({
+        error: 'A URL de integração deve utilizar obrigatoriamente HTTPS e o host script.google.com.',
+      });
+      return;
+    }
+
+    const normalizedName = rawName.replace(/\s+/g, ' ');
+    const formattedPhone = formatPhoneMask(rawPhone);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const outgoingResponse = await fetch(parsedUrl.toString(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          id,
+          name: normalizedName,
+          phone: formattedPhone,
+          secret: sheetsSecret,
+        }),
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!outgoingResponse.ok) {
+        res.status(502).json({
+          error: `Falha na comunicação com o serviço de cadastro (HTTP ${outgoingResponse.status}). Tente novamente mais tarde.`,
+        });
+        return;
+      }
+
+      let result: unknown;
+      try {
+        result = await outgoingResponse.json();
+      } catch {
+        res.status(502).json({
+          error: 'Resposta malformada recebida do serviço de cadastro.',
+        });
+        return;
+      }
+
+      if (
+        !result ||
+        typeof result !== 'object' ||
+        (result as { ok?: unknown }).ok !== true ||
+        (result as { id?: unknown }).id !== id
+      ) {
+        res.status(502).json({
+          error: 'A gravação do contato não foi confirmada pelo serviço externo. Tente novamente.',
+        });
+        return;
+      }
+
+      res.status(200).json({ ok: true, id });
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      if (err instanceof Error && err.name === 'AbortError') {
+        res.status(504).json({
+          error: 'Tempo limite esgotado ao contatar o serviço de cadastro de contato. Tente novamente.',
+        });
+        return;
+      }
+      res.status(502).json({
+        error: 'Erro de conexão ao enviar os dados de contato. Tente novamente mais tarde.',
+      });
     }
   });
 

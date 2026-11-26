@@ -6,8 +6,11 @@ import {
   Building2,
   CheckCircle2,
   FileText,
+  Info,
   Loader2,
+  Send,
   ShieldCheck,
+  UserCheck,
   X,
 } from 'lucide-react';
 import type { ConsultaPublicResult, SiteSettings } from '../types';
@@ -18,6 +21,7 @@ import {
   isValidBankAccount,
   isValidBankAgency,
   isValidBrPhone,
+  isValidContactName,
   isValidCpf,
   isValidFullName,
   isValidRequiredBankDigit,
@@ -75,7 +79,17 @@ export function PublicPortal({
   // Modal de Regulamento e Política de Privacidade (LGPD)
   const [legalModal, setLegalModal] = useState<LegalDocType>(null);
 
+  // Seção independente: Cadastro de contato (retorno de contato voluntário)
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [submittingContact, setSubmittingContact] = useState(false);
+  const [contactError, setContactError] = useState<string | null>(null);
+  const [contactSuccess, setContactSuccess] = useState<{ id: string; name: string } | null>(null);
+  const [currentContactUuid, setCurrentContactUuid] = useState<string>(() => crypto.randomUUID());
+  const lastContactAttemptRef = useRef<{ name: string; phone: string; uuid: string } | null>(null);
+
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const contactNameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (prefersReducedMotion) {
@@ -104,6 +118,102 @@ export function PublicPortal({
     window.setTimeout(() => {
       nameInputRef.current?.focus();
     }, 200);
+  }
+
+  function focusContactSection(): void {
+    if (step !== 'inicio') {
+      handleReset();
+    }
+    window.setTimeout(() => {
+      const el = document.getElementById('cadastro-contato');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      contactNameInputRef.current?.focus();
+    }, 150);
+  }
+
+  async function handleContactSubmit(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    setContactError(null);
+
+    const trimmedName = contactName.trim().replace(/\s+/g, ' ');
+    if (!isValidContactName(trimmedName)) {
+      setContactError('Informe seu nome completo ou identificação de contato (mínimo 2 caracteres).');
+      return;
+    }
+    if (!isValidBrPhone(contactPhone)) {
+      setContactError('Informe um telefone brasileiro válido com DDD.');
+      return;
+    }
+
+    // Idempotência: reutiliza o mesmo UUID v4 se estiver reenviando os mesmos dados (ex.: erro de rede/servidor)
+    let uuidToSend = currentContactUuid;
+    if (
+      lastContactAttemptRef.current &&
+      lastContactAttemptRef.current.name === trimmedName &&
+      lastContactAttemptRef.current.phone === contactPhone
+    ) {
+      uuidToSend = lastContactAttemptRef.current.uuid;
+    } else {
+      uuidToSend = crypto.randomUUID();
+      setCurrentContactUuid(uuidToSend);
+      lastContactAttemptRef.current = { name: trimmedName, phone: contactPhone, uuid: uuidToSend };
+    }
+
+    setSubmittingContact(true);
+    try {
+      const res = await fetch('/api/cadastro', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: uuidToSend,
+          name: trimmedName,
+          phone: contactPhone,
+        }),
+      });
+
+      const data = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        id?: string;
+        error?: string;
+      } | null;
+
+      if (!res.ok || !data || data.ok !== true || data.id !== uuidToSend) {
+        if (res.status === 503) {
+          setContactError(
+            data?.error ||
+              'O serviço de cadastro de contato está temporariamente indisponível. A integração não foi configurada.',
+          );
+        } else {
+          setContactError(
+            data?.error || 'Não foi possível confirmar o envio do seu contato. Tente novamente mais tarde.',
+          );
+        }
+        return;
+      }
+
+      setContactSuccess({ id: uuidToSend, name: trimmedName });
+      setContactName('');
+      setContactPhone('');
+      const nextUuid = crypto.randomUUID();
+      setCurrentContactUuid(nextUuid);
+      lastContactAttemptRef.current = null;
+    } catch {
+      setContactError('Erro de conexão ao enviar seus dados. Verifique sua rede e tente novamente.');
+    } finally {
+      setSubmittingContact(false);
+    }
+  }
+
+  function handleResetContactForm(): void {
+    setContactSuccess(null);
+    setContactError(null);
+    setContactName('');
+    setContactPhone('');
+    const nextUuid = crypto.randomUUID();
+    setCurrentContactUuid(nextUuid);
+    lastContactAttemptRef.current = null;
   }
 
   async function handleConsultarSubmit(e: FormEvent): Promise<void> {
@@ -329,6 +439,13 @@ export function PublicPortal({
               className="hover:text-[#151515] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               Consultar
+            </button>
+            <button
+              type="button"
+              onClick={focusContactSection}
+              className="hover:text-[#151515] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Cadastro de contato
             </button>
             <button
               type="button"
@@ -668,6 +785,151 @@ export function PublicPortal({
           </section>
         )}
 
+        {/* SEÇÃO INDEPENDENTE: CADASTRO DE CONTATO (VOLUNTÁRIO) */}
+        {step === 'inicio' && (
+          <section
+            id="cadastro-contato"
+            className="bg-slate-50 border-t border-neutral-200 py-12 lg:py-16 text-[#151515]"
+          >
+            <div className="max-w-5xl mx-auto px-4 sm:px-6">
+              <div className="max-w-2xl mx-auto">
+                <div className="text-center sm:text-left mb-6">
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-neutral-200/80 text-neutral-800 text-xs font-semibold uppercase tracking-wider mb-3">
+                    <UserCheck className="w-3.5 h-3.5 text-[#FE0A8C]" aria-hidden="true" />
+                    <span>Retorno voluntário</span>
+                  </div>
+                  <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#151515] tracking-tight mb-2">
+                    Cadastro de contato
+                  </h2>
+                  <p className="text-sm sm:text-base text-neutral-600 leading-relaxed">
+                    Preencha os campos abaixo caso deseje voluntariamente receber um retorno de contato da nossa equipe. Este formulário é totalmente independente da consulta de pontos ou resgates e não solicita CPF nem informações bancárias.
+                  </p>
+                </div>
+
+                {contactSuccess ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-white border border-emerald-200 rounded-2xl p-6 sm:p-8 shadow-sm text-center space-y-4"
+                  >
+                    <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
+                      <CheckCircle2 className="w-6 h-6" aria-hidden="true" />
+                    </div>
+                    <h3 className="font-display text-xl font-bold text-[#151515]">
+                      Cadastro de contato enviado com sucesso!
+                    </h3>
+                    <p className="text-sm text-neutral-600 leading-relaxed max-w-md mx-auto">
+                      Agradecemos o envio, <strong className="text-[#151515]">{contactSuccess.name}</strong>. Seus dados foram registrados com sucesso e retornaremos o contato em breve.
+                    </p>
+                    <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-lg text-xs font-mono text-neutral-600 max-w-md mx-auto">
+                      ID de confirmação: <span className="text-[#151515] font-semibold">{contactSuccess.id}</span>
+                    </div>
+                    <div>
+                      <button
+                        type="button"
+                        onClick={handleResetContactForm}
+                        className="px-5 py-2.5 bg-[#151515] hover:bg-neutral-800 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                      >
+                        Enviar novo cadastro de contato
+                      </button>
+                    </div>
+                  </motion.div>
+                ) : (
+                  <motion.form
+                    onSubmit={handleContactSubmit}
+                    noValidate
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-white border border-neutral-200 rounded-2xl p-6 sm:p-8 shadow-sm space-y-5"
+                  >
+                    <div>
+                      <label
+                        htmlFor="contact-name-input"
+                        className="block text-sm font-medium text-[#151515] mb-1.5"
+                      >
+                        Nome completo
+                      </label>
+                      <input
+                        ref={contactNameInputRef}
+                        id="contact-name-input"
+                        type="text"
+                        required
+                        autoComplete="name"
+                        value={contactName}
+                        onChange={(e) => {
+                          setContactName(e.target.value);
+                          if (contactError) setContactError(null);
+                        }}
+                        placeholder="Digite seu nome completo"
+                        className="w-full h-12 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
+                      />
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="contact-phone-input"
+                        className="block text-sm font-medium text-[#151515] mb-1.5"
+                      >
+                        Telefone brasileiro com DDD
+                      </label>
+                      <input
+                        id="contact-phone-input"
+                        type="tel"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        required
+                        maxLength={15}
+                        value={contactPhone}
+                        onChange={(e) => {
+                          setContactPhone(formatPhoneMask(e.target.value));
+                          if (contactError) setContactError(null);
+                        }}
+                        placeholder="(00) 00000-0000"
+                        className="w-full h-12 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm font-mono tabular-nums text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
+                      />
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-neutral-50 border border-neutral-200 text-xs text-neutral-600 leading-relaxed flex items-start gap-2.5">
+                      <Info className="w-4 h-4 text-[#FE0A8C] shrink-0 mt-0.5" aria-hidden="true" />
+                      <span>
+                        Os dados informados acima serão usados exclusivamente para retornar o contato voluntário solicitado. Não solicitamos senhas, biometria nem dados bancários.
+                      </span>
+                    </div>
+
+                    {contactError && (
+                      <div
+                        role="alert"
+                        className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 flex items-start gap-2"
+                      >
+                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+                        <span>{contactError}</span>
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={submittingContact}
+                      className="w-full h-12 px-5 bg-[#151515] hover:bg-neutral-800 disabled:bg-neutral-500 text-white text-sm font-bold rounded-lg transition-colors inline-flex items-center justify-center gap-2 cursor-pointer shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[#151515] focus-visible:ring-offset-2"
+                    >
+                      {submittingContact ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                          <span>Gravando cadastro...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Send className="w-4 h-4" aria-hidden="true" />
+                          <span>Enviar dados de contato</span>
+                        </>
+                      )}
+                    </button>
+                  </motion.form>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* ETAPA 3 — CONFIRMAÇÃO DE TITULARIDADE E DADOS PARA DEPÓSITO (tema padrão do portal) */}
         {step === 'confirmacao' && consultaResult && (
           <section className="flex-1 bg-neutral-50 py-10 lg:py-16">
@@ -984,6 +1246,13 @@ export function PublicPortal({
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-5 text-xs sm:text-sm text-neutral-300">
+            <button
+              type="button"
+              onClick={focusContactSection}
+              className="hover:text-[#FE0A8C] transition-colors cursor-pointer"
+            >
+              Cadastro de contato
+            </button>
             <button
               type="button"
               onClick={() => setLegalModal('regulamento')}
