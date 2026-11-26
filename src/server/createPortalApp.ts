@@ -73,19 +73,19 @@ const DEFAULT_EXCHANGE_OPTIONS: ExchangeOption[] = [
   {
     id: 'credito-fatura',
     title: 'Crédito em Fatura ou Desconto',
-    description: 'Simulação de abatimento direto em compras participantes',
+    description: 'Abatimento direto em compras e faturas participantes',
     rateLabel: '1.000 pts = R$ 50,00',
   },
   {
     id: 'vale-compras',
     title: 'Vale-Compras Digital',
-    description: 'Simulação de voucher para lojas e parceiros credenciados',
+    description: 'Voucher para utilizar em lojas e parceiros credenciados',
     rateLabel: '1.000 pts = R$ 45,00',
   },
   {
     id: 'cashback-conta',
-    title: 'Transferência para Conta',
-    description: 'Simulação de conversão em saldo demonstrativo',
+    title: 'Transferência em Conta',
+    description: 'Conversão direta do saldo de pontos em crédito em reais',
     rateLabel: '1.000 pts = R$ 40,00',
   },
 ];
@@ -94,23 +94,23 @@ const DEFAULT_CORE_SETTINGS: Omit<SiteSettings, 'brandLogoUrl' | 'passcodeManage
   brandName: 'Portal de Pontos',
   heroTitle: 'Vamos verificar se você tem pontos disponíveis',
   heroSubtitle:
-    'Explore a consulta demonstrativa com perfil fictício gerado automaticamente e simule a troca dos pontos por benefícios.',
+    'Consulte agora a quantidade de pontos disponíveis e descubra exatamente em quanto eles podem ser convertidos em reais.',
   formHeading: 'Vamos trocar eles em pontos',
-  pointsLabel: 'pontos ilustrativos',
+  pointsLabel: 'pontos',
   minPointsPreview: 1250,
   maxPointsPreview: 4850,
   exchangeOptions: DEFAULT_EXCHANGE_OPTIONS,
 };
 
 const FICTITIOUS_PROFILES = [
-  'Ana Beatriz · Perfil Fictício',
-  'Carlos Eduardo · Perfil Fictício',
-  'Fernanda Costa · Perfil Fictício',
-  'Rafael Mendes · Perfil Fictício',
-  'Juliana Rocha · Perfil Fictício',
-  'Marcos Vinícius · Perfil Fictício',
-  'Patrícia Lima · Perfil Fictício',
-  'Lucas Almeida · Perfil Fictício',
+  'Ana Beatriz',
+  'Carlos Eduardo',
+  'Fernanda Costa',
+  'Rafael Mendes',
+  'Juliana Rocha',
+  'Marcos Vinícius',
+  'Patrícia Lima',
+  'Lucas Almeida',
 ];
 
 function createUtf8JsonParser(limitBytes: number): RequestHandler {
@@ -850,7 +850,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
     if (hasDisallowedPersonalPayload(req.body)) {
       res.status(400).json({
         error:
-          'Dados pessoais como nome, CPF, e-mail ou telefone não são aceitos nesta consulta. O perfil ilustrativo é gerado automaticamente no servidor.',
+          'Dados pessoais como nome, CPF, e-mail ou telefone não são aceitos nesta consulta. O perfil de participante é gerado automaticamente no servidor.',
       });
       return;
     }

@@ -16,6 +16,7 @@ import {
   Upload,
 } from 'lucide-react';
 import type { ConsultaAdminRecord, SiteSettings } from '../types';
+import { calculateConvertedBrl, formatBrl } from '../utils/points';
 import { BrandMark } from './BrandMark';
 
 interface AdminPanelProps {
@@ -318,32 +319,42 @@ export function AdminPanel({
     }
   }
 
+  function getRateLabelForRow(row: ConsultaAdminRecord): string {
+    const matched = settings.exchangeOptions.find((opt) => opt.id === row.selectedOptionId);
+    return matched?.rateLabel ?? settings.exchangeOptions[0]?.rateLabel ?? '1.000 pts = R$ 50,00';
+  }
+
   function handleExportCsv(): void {
     const headers = [
       'Protocolo',
-      'Perfil Ilustrativo',
+      'Participante',
       'Referência',
-      'Pontos Ilustrativos',
+      'Pontos',
+      'Valor Equivalente',
       'Status',
-      'Modalidade Simulada',
+      'Modalidade',
       'Data Consulta',
     ];
-    const rows = filteredConsultas.map((c) => [
-      escapeCsvCell(c.protocol),
-      escapeCsvCell(c.profileLabel),
-      escapeCsvCell(c.referenceCode),
-      escapeCsvCell(c.pointsAvailable),
-      escapeCsvCell(c.status === 'troca_solicitada' ? 'Troca simulada' : 'Consultado'),
-      escapeCsvCell(c.selectedOptionTitle || '-'),
-      escapeCsvCell(new Date(c.createdAt).toLocaleString('pt-BR')),
-    ]);
+    const rows = filteredConsultas.map((c) => {
+      const brl = calculateConvertedBrl(c.pointsAvailable, getRateLabelForRow(c));
+      return [
+        escapeCsvCell(c.protocol),
+        escapeCsvCell(c.profileLabel),
+        escapeCsvCell(c.referenceCode),
+        escapeCsvCell(c.pointsAvailable),
+        escapeCsvCell(formatBrl(brl)),
+        escapeCsvCell(c.status === 'troca_solicitada' ? 'Troca confirmada' : 'Consultado'),
+        escapeCsvCell(c.selectedOptionTitle || '-'),
+        escapeCsvCell(new Date(c.createdAt).toLocaleString('pt-BR')),
+      ];
+    });
 
     const csv = [headers.map(escapeCsvCell).join(','), ...rows.map((r) => r.join(','))].join('\n');
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `consultas-ilustrativas-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `consultas-pontos-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -400,8 +411,8 @@ export function AdminPanel({
   // Login Screen
   if (!adminToken) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col justify-between">
-        <header className="bg-white border-b border-slate-200">
+      <div className="min-h-screen bg-neutral-50 flex flex-col justify-between">
+        <header className="bg-white border-b border-neutral-200">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
             <BrandMark
               brandName={settings.brandName}
@@ -411,7 +422,7 @@ export function AdminPanel({
             <button
               type="button"
               onClick={() => onNavigate('/')}
-              className="text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+              className="text-sm font-medium text-neutral-600 hover:text-[#151515] transition-colors cursor-pointer"
             >
               Voltar ao site
             </button>
@@ -419,20 +430,20 @@ export function AdminPanel({
         </header>
 
         <main className="flex-1 flex items-center justify-center px-4 py-12">
-          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl p-6 sm:p-8">
-            <div className="w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-900 mb-5">
+          <div className="w-full max-w-md bg-white border border-neutral-200 rounded-xl p-6 sm:p-8">
+            <div className="w-10 h-10 rounded-lg bg-[#151515] flex items-center justify-center text-[#FE0A8C] mb-5">
               <Lock className="w-5 h-5" aria-hidden="true" />
             </div>
-            <h1 className="font-display text-2xl font-bold text-slate-950 tracking-tight mb-1.5">
+            <h1 className="font-display text-2xl font-bold text-[#151515] tracking-tight mb-1.5">
               Painel Administrativo
             </h1>
-            <p className="text-sm text-slate-600 mb-6">
-              Informe a senha de administrador para personalizar o nome, subir a logo e gerenciar as consultas ilustrativas.
+            <p className="text-sm text-neutral-600 mb-6">
+              Informe a senha de administrador para personalizar o nome, subir a logo e gerenciar as consultas de pontos.
             </p>
 
             <form onSubmit={handleLoginSubmit} className="space-y-4">
               <div>
-                <label htmlFor="admin-passcode" className="block text-sm font-medium text-slate-800 mb-1.5">
+                <label htmlFor="admin-passcode" className="block text-sm font-medium text-[#151515] mb-1.5">
                   Senha de acesso
                 </label>
                 <div className="relative">
@@ -447,13 +458,13 @@ export function AdminPanel({
                       if (loginError) setLoginError(null);
                     }}
                     placeholder="Digite sua senha"
-                    className="w-full h-11 pl-3.5 pr-11 rounded-lg bg-white border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                    className="w-full h-11 pl-3.5 pr-11 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPasscode((prev) => !prev)}
                     aria-label={showPasscode ? 'Ocultar senha' : 'Mostrar senha'}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-500 hover:text-slate-900 cursor-pointer"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-neutral-500 hover:text-[#151515] cursor-pointer"
                   >
                     {showPasscode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -473,7 +484,7 @@ export function AdminPanel({
               <button
                 type="submit"
                 disabled={loggingIn}
-                className="w-full h-11 px-5 bg-blue-800 hover:bg-blue-900 disabled:bg-blue-800/60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+                className="w-full h-11 px-5 bg-[#FE0A8C] hover:bg-[#DF067A] disabled:bg-[#FE0A8C]/60 text-white text-sm font-bold rounded-lg transition-colors cursor-pointer"
               >
                 {loggingIn ? 'Verificando...' : 'Entrar no painel'}
               </button>
@@ -501,15 +512,15 @@ export function AdminPanel({
 
   const tabTitles: Record<AdminTab, string> = {
     marca: 'Identidade e Logo',
-    consultas: 'Consultas e Trocas Simuladas',
+    consultas: 'Consultas e Trocas',
     seguranca: 'Segurança e Senha',
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col lg:flex-row">
+    <div className="min-h-screen bg-neutral-50 text-[#151515] flex flex-col lg:flex-row">
       {/* Sidebar */}
-      <aside className="w-full lg:w-64 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 shrink-0">
-        <div className="h-16 px-5 border-b border-slate-200 flex items-center justify-between lg:justify-start">
+      <aside className="w-full lg:w-64 bg-white border-b lg:border-b-0 lg:border-r border-neutral-200 shrink-0">
+        <div className="h-16 px-5 border-b border-neutral-200 flex items-center justify-between lg:justify-start">
           <BrandMark
             brandName={brandName.trim() || settings.brandName}
             brandLogoUrl={settings.brandLogoUrl}
@@ -523,8 +534,8 @@ export function AdminPanel({
             onClick={() => setActiveTab('marca')}
             className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors cursor-pointer ${
               activeTab === 'marca'
-                ? 'bg-slate-900 text-white'
-                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                ? 'bg-[#151515] text-white'
+                : 'text-neutral-600 hover:bg-neutral-100 hover:text-[#151515]'
             }`}
           >
             <Palette className="w-4 h-4 shrink-0" aria-hidden="true" />
@@ -536,12 +547,12 @@ export function AdminPanel({
             onClick={() => setActiveTab('consultas')}
             className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors cursor-pointer ${
               activeTab === 'consultas'
-                ? 'bg-slate-900 text-white'
-                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                ? 'bg-[#151515] text-white'
+                : 'text-neutral-600 hover:bg-neutral-100 hover:text-[#151515]'
             }`}
           >
             <FileSpreadsheet className="w-4 h-4 shrink-0" aria-hidden="true" />
-            <span>Consultas Simuladas</span>
+            <span>Consultas de Pontos</span>
           </button>
 
           <button
@@ -549,8 +560,8 @@ export function AdminPanel({
             onClick={() => setActiveTab('seguranca')}
             className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors cursor-pointer ${
               activeTab === 'seguranca'
-                ? 'bg-slate-900 text-white'
-                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                ? 'bg-[#151515] text-white'
+                : 'text-neutral-600 hover:bg-neutral-100 hover:text-[#151515]'
             }`}
           >
             <KeyRound className="w-4 h-4 shrink-0" aria-hidden="true" />
@@ -562,18 +573,18 @@ export function AdminPanel({
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top Bar Contract for Admin */}
-        <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-8 flex items-center justify-between gap-4">
-          <div className="text-sm text-slate-500 truncate">
+        <header className="h-16 bg-white border-b border-neutral-200 px-4 sm:px-8 flex items-center justify-between gap-4">
+          <div className="text-sm text-neutral-500 truncate">
             <span>Painel</span>
             <span className="mx-2">/</span>
-            <span className="font-semibold text-slate-900">{tabTitles[activeTab]}</span>
+            <span className="font-semibold text-[#151515]">{tabTitles[activeTab]}</span>
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
             <button
               type="button"
               onClick={() => onNavigate('/')}
-              className="px-3.5 py-2 text-xs sm:text-sm font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              className="px-3.5 py-2 text-xs sm:text-sm font-medium text-[#151515] bg-white border border-neutral-300 hover:bg-neutral-50 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
               <span>Ver site</span>
               <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
@@ -581,7 +592,7 @@ export function AdminPanel({
             <button
               type="button"
               onClick={onLogout}
-              className="px-3.5 py-2 text-xs sm:text-sm font-medium text-slate-700 hover:text-red-700 hover:bg-red-50 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
+              className="px-3.5 py-2 text-xs sm:text-sm font-medium text-neutral-700 hover:text-red-700 hover:bg-red-50 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
             >
               <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Sair</span>
@@ -594,32 +605,32 @@ export function AdminPanel({
           {activeTab === 'marca' && (
             <div className="space-y-8">
               {/* Live Header Preview */}
-              <section className="bg-white border border-slate-200 rounded-xl p-6">
-                <p className="text-xs font-medium text-slate-500 mb-3">
+              <section className="bg-white border border-neutral-200 rounded-xl p-6">
+                <p className="text-xs font-medium text-neutral-500 mb-3">
                   Pré-visualização do cabeçalho no site público
                 </p>
-                <div className="border border-slate-200 rounded-lg px-5 h-16 flex items-center justify-between bg-slate-50/50">
+                <div className="border border-neutral-200 rounded-lg px-5 h-16 flex items-center justify-between bg-white">
                   <BrandMark
                     brandName={brandName.trim() || settings.brandName}
                     brandLogoUrl={settings.brandLogoUrl}
                   />
-                  <span className="px-3.5 py-1.5 rounded-lg bg-blue-800 text-white text-xs font-semibold">
+                  <span className="px-3.5 py-1.5 rounded-lg bg-[#FE0A8C] text-white text-xs font-bold">
                     Verificar pontos
                   </span>
                 </div>
               </section>
 
               {/* Upload Logo */}
-              <section className="bg-white border border-slate-200 rounded-xl p-6">
-                <h2 className="font-display text-lg font-bold text-slate-950 mb-1">
+              <section className="bg-white border border-neutral-200 rounded-xl p-6">
+                <h2 className="font-display text-lg font-bold text-[#151515] mb-1">
                   Logo personalizada
                 </h2>
-                <p className="text-sm text-slate-600 mb-5">
+                <p className="text-sm text-neutral-600 mb-5">
                   Envie a imagem da sua marca em PNG, JPG ou WEBP (até 1,5 MB). Ela aparecerá automaticamente no cabeçalho e no rodapé do site.
                 </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
-                  <div className="md:col-span-4 flex flex-col items-center justify-center p-5 border border-slate-200 rounded-lg bg-slate-50 min-h-[140px]">
+                  <div className="md:col-span-4 flex flex-col items-center justify-center p-5 border border-neutral-200 rounded-lg bg-neutral-50 min-h-[140px]">
                     {settings.brandLogoUrl ? (
                       <img
                         src={settings.brandLogoUrl}
@@ -628,7 +639,7 @@ export function AdminPanel({
                         className="max-h-20 max-w-full object-contain"
                       />
                     ) : (
-                      <p className="text-xs text-slate-500 text-center">
+                      <p className="text-xs text-neutral-500 text-center">
                         Nenhuma logo enviada ainda.
                         <br />
                         Exibindo iniciais da marca.
@@ -645,7 +656,7 @@ export function AdminPanel({
                       onDragLeave={() => setDragActive(false)}
                       onDrop={handleDrop}
                       className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-                        dragActive ? 'border-blue-800 bg-blue-50/40' : 'border-slate-300 bg-slate-50/60'
+                        dragActive ? 'border-[#FE0A8C] bg-[#FE0A8C]/5' : 'border-neutral-300 bg-neutral-50/60'
                       }`}
                     >
                       <input
@@ -656,11 +667,11 @@ export function AdminPanel({
                         className="hidden"
                         id="logo-upload-input"
                       />
-                      <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" aria-hidden="true" />
-                      <p className="text-sm font-medium text-slate-800 mb-1">
+                      <Upload className="w-6 h-6 text-neutral-500 mx-auto mb-2" aria-hidden="true" />
+                      <p className="text-sm font-medium text-[#151515] mb-1">
                         Arraste a imagem aqui ou clique para escolher
                       </p>
-                      <p className="text-xs text-slate-500 mb-4">
+                      <p className="text-xs text-neutral-500 mb-4">
                         PNG, JPG ou WEBP · Máximo 1,5 MB
                       </p>
                       <div className="flex flex-wrap items-center justify-center gap-3">
@@ -668,7 +679,7 @@ export function AdminPanel({
                           type="button"
                           disabled={uploadingLogo}
                           onClick={() => fileInputRef.current?.click()}
-                          className="px-4 py-2 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white text-xs sm:text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+                          className="px-4 py-2 bg-[#151515] hover:bg-neutral-800 disabled:bg-neutral-400 text-white text-xs sm:text-sm font-semibold rounded-lg transition-colors cursor-pointer"
                         >
                           {uploadingLogo ? 'Enviando...' : 'Subir logo'}
                         </button>
@@ -677,7 +688,7 @@ export function AdminPanel({
                             type="button"
                             disabled={uploadingLogo}
                             onClick={handleRemoveLogo}
-                            className="px-4 py-2 bg-white border border-slate-300 hover:bg-red-50 hover:border-red-300 hover:text-red-700 text-slate-700 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer"
+                            className="px-4 py-2 bg-white border border-neutral-300 hover:bg-red-50 hover:border-red-300 hover:text-red-700 text-neutral-700 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer"
                           >
                             Remover logo
                           </button>
@@ -707,18 +718,18 @@ export function AdminPanel({
               </section>
 
               {/* Nome e Textos do Formulário */}
-              <section className="bg-white border border-slate-200 rounded-xl p-6">
-                <h2 className="font-display text-lg font-bold text-slate-950 mb-1">
+              <section className="bg-white border border-neutral-200 rounded-xl p-6">
+                <h2 className="font-display text-lg font-bold text-[#151515] mb-1">
                   Nome do site e textos do formulário
                 </h2>
-                <p className="text-sm text-slate-600 mb-6">
+                <p className="text-sm text-neutral-600 mb-6">
                   Personalize o nome exibido em todo o portal e os textos exibidos aos visitantes.
                 </p>
 
                 <form onSubmit={handleSaveSettings} className="space-y-5">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                     <div>
-                      <label htmlFor="brandName" className="block text-sm font-medium text-slate-800 mb-1.5">
+                      <label htmlFor="brandName" className="block text-sm font-medium text-[#151515] mb-1.5">
                         Nome personalizado do site
                       </label>
                       <input
@@ -729,12 +740,12 @@ export function AdminPanel({
                         value={brandName}
                         onChange={(e) => setBrandName(e.target.value)}
                         placeholder="Ex.: Clube Vantagens Brasil"
-                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                       />
                     </div>
 
                     <div>
-                      <label htmlFor="formHeading" className="block text-sm font-medium text-slate-800 mb-1.5">
+                      <label htmlFor="formHeading" className="block text-sm font-medium text-[#151515] mb-1.5">
                         Título do formulário
                       </label>
                       <input
@@ -744,13 +755,13 @@ export function AdminPanel({
                         maxLength={100}
                         value={formHeading}
                         onChange={(e) => setFormHeading(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                       />
                     </div>
                   </div>
 
                   <div>
-                    <label htmlFor="heroTitle" className="block text-sm font-medium text-slate-800 mb-1.5">
+                    <label htmlFor="heroTitle" className="block text-sm font-medium text-[#151515] mb-1.5">
                       Chamada principal da página
                     </label>
                     <input
@@ -760,12 +771,12 @@ export function AdminPanel({
                       maxLength={120}
                       value={heroTitle}
                       onChange={(e) => setHeroTitle(e.target.value)}
-                      className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                      className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                     />
                   </div>
 
                   <div>
-                    <label htmlFor="heroSubtitle" className="block text-sm font-medium text-slate-800 mb-1.5">
+                    <label htmlFor="heroSubtitle" className="block text-sm font-medium text-[#151515] mb-1.5">
                       Descrição inicial
                     </label>
                     <textarea
@@ -774,13 +785,13 @@ export function AdminPanel({
                       maxLength={260}
                       value={heroSubtitle}
                       onChange={(e) => setHeroSubtitle(e.target.value)}
-                      className="w-full p-3.5 rounded-lg bg-white border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                      className="w-full p-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                     />
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
                     <div>
-                      <label htmlFor="pointsLabel" className="block text-sm font-medium text-slate-800 mb-1.5">
+                      <label htmlFor="pointsLabel" className="block text-sm font-medium text-[#151515] mb-1.5">
                         Rótulo dos pontos
                       </label>
                       <input
@@ -789,11 +800,11 @@ export function AdminPanel({
                         maxLength={40}
                         value={pointsLabel}
                         onChange={(e) => setPointsLabel(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm text-slate-900 focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                       />
                     </div>
                     <div>
-                      <label htmlFor="minPoints" className="block text-sm font-medium text-slate-800 mb-1.5">
+                      <label htmlFor="minPoints" className="block text-sm font-medium text-[#151515] mb-1.5">
                         Pontos mínimos exibidos
                       </label>
                       <input
@@ -803,11 +814,11 @@ export function AdminPanel({
                         max={1000000}
                         value={minPointsPreview}
                         onChange={(e) => setMinPointsPreview(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm font-mono tabular-nums text-slate-900 focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm font-mono tabular-nums text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                       />
                     </div>
                     <div>
-                      <label htmlFor="maxPoints" className="block text-sm font-medium text-slate-800 mb-1.5">
+                      <label htmlFor="maxPoints" className="block text-sm font-medium text-[#151515] mb-1.5">
                         Pontos máximos exibidos
                       </label>
                       <input
@@ -817,7 +828,7 @@ export function AdminPanel({
                         max={1000000}
                         value={maxPointsPreview}
                         onChange={(e) => setMaxPointsPreview(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm font-mono tabular-nums text-slate-900 focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm font-mono tabular-nums text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                       />
                     </div>
                   </div>
@@ -844,7 +855,7 @@ export function AdminPanel({
                     <button
                       type="submit"
                       disabled={savingSettings}
-                      className="h-11 px-6 bg-blue-800 hover:bg-blue-900 disabled:bg-blue-800/60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+                      className="h-11 px-6 bg-[#FE0A8C] hover:bg-[#DF067A] disabled:bg-[#FE0A8C]/60 text-white text-sm font-bold rounded-lg transition-colors cursor-pointer"
                     >
                       {savingSettings ? 'Salvando...' : 'Salvar alterações'}
                     </button>
@@ -857,53 +868,49 @@ export function AdminPanel({
           {/* TAB 2: CONSULTAS */}
           {activeTab === 'consultas' && (
             <div className="space-y-6">
-              <p className="text-xs font-medium text-amber-800">
-                Perfis fictícios gerados no servidor · Saldo ilustrativo · sem valor para resgate
-              </p>
-
               {/* Metrics Strip */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs font-medium text-slate-500 mb-1">Consultas geradas</p>
-                  <p className="font-display text-2xl font-bold text-slate-950 tabular-nums">
+                <div className="bg-white border border-neutral-200 rounded-xl p-5">
+                  <p className="text-xs font-medium text-neutral-500 mb-1">Consultas registradas</p>
+                  <p className="font-display text-2xl font-bold text-[#151515] tabular-nums">
                     {totalConsultas.toLocaleString('pt-BR')}
                   </p>
                 </div>
-                <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs font-medium text-slate-500 mb-1">Trocas simuladas</p>
-                  <p className="font-display text-2xl font-bold text-emerald-700 tabular-nums">
+                <div className="bg-white border border-neutral-200 rounded-xl p-5">
+                  <p className="text-xs font-medium text-neutral-500 mb-1">Trocas confirmadas</p>
+                  <p className="font-display text-2xl font-bold text-[#C8006B] tabular-nums">
                     {totalTrocas.toLocaleString('pt-BR')}
                   </p>
                 </div>
-                <div className="bg-white border border-slate-200 rounded-xl p-5">
-                  <p className="text-xs font-medium text-slate-500 mb-1">Pontos ilustrativos</p>
-                  <p className="font-display text-2xl font-bold text-slate-950 tabular-nums">
+                <div className="bg-white border border-neutral-200 rounded-xl p-5">
+                  <p className="text-xs font-medium text-neutral-500 mb-1">Total de pontos</p>
+                  <p className="font-display text-2xl font-bold text-[#151515] tabular-nums">
                     {totalPontos.toLocaleString('pt-BR')}
                   </p>
                 </div>
               </div>
 
               {/* Filter & Export Toolbar */}
-              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-                <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
+                <div className="p-4 border-b border-neutral-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div className="relative flex-1 max-w-sm">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true" />
+                    <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true" />
                     <input
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Buscar por perfil, referência ou protocolo..."
-                      className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-blue-800"
+                      placeholder="Buscar por participante, referência ou protocolo..."
+                      className="w-full h-10 pl-9 pr-3 rounded-lg border border-neutral-300 text-sm focus:outline-none focus:border-[#FE0A8C]"
                     />
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3">
-                    <div className="inline-flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                    <div className="inline-flex items-center gap-1 p-1 bg-neutral-100 rounded-lg">
                       {(
                         [
                           ['todas', 'Todas'],
                           ['consultado', 'Consultado'],
-                          ['troca_solicitada', 'Troca simulada'],
+                          ['troca_solicitada', 'Troca confirmada'],
                         ] as const
                       ).map(([val, label]) => (
                         <button
@@ -912,8 +919,8 @@ export function AdminPanel({
                           onClick={() => setStatusFilter(val)}
                           className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
                             statusFilter === val
-                              ? 'bg-white text-slate-900 shadow-sm'
-                              : 'text-slate-600 hover:text-slate-900'
+                              ? 'bg-white text-[#151515] shadow-sm'
+                              : 'text-neutral-600 hover:text-[#151515]'
                           }`}
                         >
                           {label}
@@ -925,7 +932,7 @@ export function AdminPanel({
                       type="button"
                       onClick={handleExportCsv}
                       disabled={filteredConsultas.length === 0}
-                      className="h-9 px-3.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50 text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="h-9 px-3.5 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-50 disabled:opacity-50 text-xs font-semibold text-[#151515] inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
                       <Download className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>Exportar CSV</span>
@@ -934,19 +941,19 @@ export function AdminPanel({
                 </div>
 
                 {loadingConsultas ? (
-                  <div className="p-8 text-center text-sm text-slate-500">
+                  <div className="p-8 text-center text-sm text-neutral-500">
                     Carregando registros...
                   </div>
                 ) : consultasError ? (
                   <div className="p-8 text-center text-sm text-red-700">{consultasError}</div>
                 ) : filteredConsultas.length === 0 ? (
                   <div className="p-10 text-center">
-                    <p className="text-sm font-medium text-slate-900 mb-1">
+                    <p className="text-sm font-medium text-[#151515] mb-1">
                       Nenhuma consulta encontrada
                     </p>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-neutral-500">
                       {consultas.length === 0
-                        ? 'As consultas ilustrativas geradas no portal aparecerão aqui.'
+                        ? 'As consultas geradas no portal aparecerão aqui.'
                         : 'Ajuste os filtros ou a busca para visualizar outros registros.'}
                     </p>
                   </div>
@@ -954,60 +961,70 @@ export function AdminPanel({
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse text-sm">
                       <thead>
-                        <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-600">
+                        <tr className="border-b border-neutral-200 bg-neutral-50 text-xs font-semibold text-neutral-600">
                           <th className="py-3 px-4">Protocolo</th>
-                          <th className="py-3 px-4">Perfil ilustrativo</th>
+                          <th className="py-3 px-4">Participante</th>
                           <th className="py-3 px-4">Referência</th>
                           <th className="py-3 px-4 text-right">Pontos</th>
+                          <th className="py-3 px-4 text-right">Valor em R$</th>
                           <th className="py-3 px-4">Status / Modalidade</th>
                           <th className="py-3 px-4">Data</th>
                           <th className="py-3 px-4 text-right">Ações</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-200">
-                        {filteredConsultas.map((row) => (
-                          <tr key={row.id} className="hover:bg-slate-50/70">
-                            <td className="py-3 px-4 font-mono text-xs text-slate-700 tabular-nums whitespace-nowrap">
-                              {row.protocol}
-                            </td>
-                            <td className="py-3 px-4 font-medium text-slate-900">
-                              {row.profileLabel}
-                            </td>
-                            <td className="py-3 px-4 font-mono text-xs text-slate-700 tabular-nums whitespace-nowrap">
-                              {row.referenceCode}
-                            </td>
-                            <td className="py-3 px-4 font-mono text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap">
-                              {row.pointsAvailable.toLocaleString('pt-BR')}
-                            </td>
-                            <td className="py-3 px-4">
-                              {row.status === 'troca_solicitada' ? (
-                                <div className="text-xs">
-                                  <span className="font-semibold text-emerald-700">Troca simulada</span>
-                                  {row.selectedOptionTitle && (
-                                    <span className="block text-slate-500">{row.selectedOptionTitle}</span>
-                                  )}
-                                </div>
-                              ) : (
-                                <span className="text-xs font-medium text-slate-600">
-                                  Apenas consultado
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-3 px-4 text-xs text-slate-500 tabular-nums whitespace-nowrap">
-                              {new Date(row.createdAt).toLocaleString('pt-BR')}
-                            </td>
-                            <td className="py-3 px-4 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteConsulta(row.id)}
-                                aria-label={`Excluir registro ${row.protocol}`}
-                                className="p-1.5 text-slate-400 hover:text-red-700 rounded transition-colors cursor-pointer"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                      <tbody className="divide-y divide-neutral-200">
+                        {filteredConsultas.map((row) => {
+                          const rowBrl = calculateConvertedBrl(
+                            row.pointsAvailable,
+                            getRateLabelForRow(row),
+                          );
+                          return (
+                            <tr key={row.id} className="hover:bg-neutral-50/70">
+                              <td className="py-3 px-4 font-mono text-xs text-neutral-700 tabular-nums whitespace-nowrap">
+                                {row.protocol}
+                              </td>
+                              <td className="py-3 px-4 font-medium text-[#151515]">
+                                {row.profileLabel}
+                              </td>
+                              <td className="py-3 px-4 font-mono text-xs text-neutral-700 tabular-nums whitespace-nowrap">
+                                {row.referenceCode}
+                              </td>
+                              <td className="py-3 px-4 font-mono text-right font-semibold text-[#151515] tabular-nums whitespace-nowrap">
+                                {row.pointsAvailable.toLocaleString('pt-BR')}
+                              </td>
+                              <td className="py-3 px-4 font-mono text-right font-semibold text-[#C8006B] tabular-nums whitespace-nowrap">
+                                {formatBrl(rowBrl)}
+                              </td>
+                              <td className="py-3 px-4">
+                                {row.status === 'troca_solicitada' ? (
+                                  <div className="text-xs">
+                                    <span className="font-semibold text-emerald-700">Troca confirmada</span>
+                                    {row.selectedOptionTitle && (
+                                      <span className="block text-neutral-500">{row.selectedOptionTitle}</span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="text-xs font-medium text-neutral-600">
+                                    Apenas consultado
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 text-xs text-neutral-500 tabular-nums whitespace-nowrap">
+                                {new Date(row.createdAt).toLocaleString('pt-BR')}
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteConsulta(row.id)}
+                                  aria-label={`Excluir registro ${row.protocol}`}
+                                  className="p-1.5 text-neutral-400 hover:text-red-700 rounded transition-colors cursor-pointer"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1018,26 +1035,26 @@ export function AdminPanel({
 
           {/* TAB 3: SEGURANÇA */}
           {activeTab === 'seguranca' && (
-            <section className="bg-white border border-slate-200 rounded-xl p-6 max-w-xl">
-              <h2 className="font-display text-lg font-bold text-slate-950 mb-1">
+            <section className="bg-white border border-neutral-200 rounded-xl p-6 max-w-xl">
+              <h2 className="font-display text-lg font-bold text-[#151515] mb-1">
                 Senha do painel administrativo
               </h2>
 
               {settings.passcodeManagedByEnv ? (
-                <div className="mt-4 p-4 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-700 leading-relaxed">
+                <div className="mt-4 p-4 rounded-lg bg-neutral-50 border border-neutral-200 text-sm text-neutral-700 leading-relaxed">
                   A autenticação deste ambiente é gerenciada pela variável privada{' '}
-                  <span className="font-mono font-semibold text-slate-900">ADMIN_PASSCODE</span> em{' '}
+                  <span className="font-mono font-semibold text-[#151515]">ADMIN_PASSCODE</span> em{' '}
                   <strong>Settings &gt; Secrets</strong>. Para alterar a senha, atualize o segredo diretamente no painel de configurações do projeto.
                 </div>
               ) : (
                 <>
-                  <p className="text-sm text-slate-600 mb-6">
+                  <p className="text-sm text-neutral-600 mb-6">
                     Atualize a senha usada para entrar no endereço <span className="font-mono">/painel</span> em modo local.
                   </p>
 
                   <form onSubmit={handleUpdatePasscode} className="space-y-4">
                     <div>
-                      <label htmlFor="currentPasscode" className="block text-sm font-medium text-slate-800 mb-1.5">
+                      <label htmlFor="currentPasscode" className="block text-sm font-medium text-[#151515] mb-1.5">
                         Senha atual
                       </label>
                       <input
@@ -1046,12 +1063,12 @@ export function AdminPanel({
                         required
                         value={currentPasscode}
                         onChange={(e) => setCurrentPasscode(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                       />
                     </div>
 
                     <div>
-                      <label htmlFor="newPasscode" className="block text-sm font-medium text-slate-800 mb-1.5">
+                      <label htmlFor="newPasscode" className="block text-sm font-medium text-[#151515] mb-1.5">
                         Nova senha
                       </label>
                       <input
@@ -1061,12 +1078,12 @@ export function AdminPanel({
                         minLength={4}
                         value={newPasscode}
                         onChange={(e) => setNewPasscode(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                       />
                     </div>
 
                     <div>
-                      <label htmlFor="confirmPasscode" className="block text-sm font-medium text-slate-800 mb-1.5">
+                      <label htmlFor="confirmPasscode" className="block text-sm font-medium text-[#151515] mb-1.5">
                         Confirmar nova senha
                       </label>
                       <input
@@ -1076,7 +1093,7 @@ export function AdminPanel({
                         minLength={4}
                         value={confirmPasscode}
                         onChange={(e) => setConfirmPasscode(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-slate-300 text-sm focus:outline-none focus:border-blue-800 focus:ring-2 focus:ring-blue-800/20"
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
                       />
                     </div>
 
@@ -1101,7 +1118,7 @@ export function AdminPanel({
                     <button
                       type="submit"
                       disabled={savingPasscode}
-                      className="h-11 px-6 bg-blue-800 hover:bg-blue-900 disabled:bg-blue-800/60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+                      className="h-11 px-6 bg-[#FE0A8C] hover:bg-[#DF067A] disabled:bg-[#FE0A8C]/60 text-white text-sm font-bold rounded-lg transition-colors cursor-pointer"
                     >
                       {savingPasscode ? 'Atualizando...' : 'Atualizar senha'}
                     </button>
