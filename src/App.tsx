@@ -68,7 +68,7 @@ export default function App() {
     let active = true;
     fetch('/api/settings')
       .then(async (res) => {
-        const data = await res.json().catch(() => null);
+        const data = (await res.json().catch(() => null)) as (SiteSettings & { error?: string }) | null;
         if (!res.ok) {
           throw new Error(
             data && typeof data.error === 'string'
@@ -76,7 +76,7 @@ export default function App() {
               : 'Falha ao carregar configurações persistidas.',
           );
         }
-        return data as SiteSettings | null;
+        return data;
       })
       .then((data) => {
         if (active && data && typeof data.brandName === 'string') {

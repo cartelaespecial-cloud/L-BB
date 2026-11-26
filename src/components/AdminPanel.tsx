@@ -113,7 +113,7 @@ export function AdminPanel({
         onLogout();
         return;
       }
-      const data = await response.json();
+      const data = (await response.json()) as { consultas?: ConsultaAdminRecord[]; error?: string };
       if (!response.ok) {
         setConsultasError(data.error || 'Não foi possível carregar os registros.');
         return;
@@ -141,13 +141,13 @@ export function AdminPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ passcode: passcode.trim() }),
       });
-      const data = await response.json();
+      const data = (await response.json()) as { token?: string; error?: string };
       if (!response.ok) {
         setLoginError(data.error || 'Senha incorreta.');
         return;
       }
       setPasscode('');
-      onLoginSuccess(data.token as string);
+      onLoginSuccess(data.token ?? '');
     } catch {
       setLoginError('Erro de conexão ao validar acesso.');
     } finally {
@@ -187,12 +187,12 @@ export function AdminPanel({
         onLogout();
         return;
       }
-      const data = await response.json();
+      const data = (await response.json()) as SiteSettings & { error?: string };
       if (!response.ok) {
         setSettingsFeedback({ type: 'err', text: data.error || 'Erro ao salvar configurações.' });
         return;
       }
-      onSettingsUpdated(data as SiteSettings);
+      onSettingsUpdated(data);
       setSettingsFeedback({ type: 'ok', text: 'Alterações salvas e aplicadas ao site.' });
     } catch {
       setSettingsFeedback({ type: 'err', text: 'Erro de conexão ao salvar alterações.' });
@@ -238,13 +238,13 @@ export function AdminPanel({
         return;
       }
 
-      const data = await response.json();
+      const data = (await response.json()) as { settings?: SiteSettings; error?: string };
       if (!response.ok) {
         setLogoFeedback({ type: 'err', text: data.error || 'Falha ao enviar a logo.' });
         return;
       }
 
-      onSettingsUpdated(data.settings as SiteSettings);
+      if (data.settings) onSettingsUpdated(data.settings);
       setLogoFeedback({ type: 'ok', text: 'Logo enviada e persistida no armazenamento.' });
     } catch {
       setLogoFeedback({ type: 'err', text: 'Não foi possível enviar a imagem.' });
@@ -281,12 +281,12 @@ export function AdminPanel({
         onLogout();
         return;
       }
-      const data = await response.json();
+      const data = (await response.json()) as { settings?: SiteSettings; error?: string };
       if (!response.ok) {
         setLogoFeedback({ type: 'err', text: data.error || 'Erro ao remover logo.' });
         return;
       }
-      onSettingsUpdated(data.settings as SiteSettings);
+      if (data.settings) onSettingsUpdated(data.settings);
       setLogoFeedback({ type: 'ok', text: 'Logo removida. Exibindo iniciais da marca.' });
     } catch {
       setLogoFeedback({ type: 'err', text: 'Erro de conexão ao remover logo.' });
@@ -307,7 +307,7 @@ export function AdminPanel({
         onLogout();
         return;
       }
-      const data = await response.json();
+      const data = (await response.json()) as { error?: string };
       if (!response.ok) {
         setConsultasError(data.error || 'Não foi possível remover o registro.');
         return;
@@ -381,7 +381,7 @@ export function AdminPanel({
         onLogout();
         return;
       }
-      const data = await response.json();
+      const data = (await response.json()) as { error?: string };
       if (!response.ok) {
         setPasscodeFeedback({ type: 'err', text: data.error || 'Não foi possível alterar a senha.' });
         return;

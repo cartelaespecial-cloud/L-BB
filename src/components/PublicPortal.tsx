@@ -77,12 +77,12 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
-      const data = await response.json();
+      const data = (await response.json()) as ConsultaPublicResult & { error?: string };
       if (!response.ok) {
         setFormError(data.error || 'Não foi possível gerar a consulta no momento.');
         return;
       }
-      setConsultaResult(data as ConsultaPublicResult);
+      setConsultaResult(data);
       setSelectedOptionId(settings.exchangeOptions[0]?.id ?? 'credito-fatura');
       setExchangeError(null);
     } catch {
@@ -105,12 +105,12 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
           claimToken: consultaResult.claimToken,
         }),
       });
-      const data = await response.json();
+      const data = (await response.json()) as ConsultaPublicResult & { error?: string };
       if (!response.ok) {
         setExchangeError(data.error || 'Não foi possível registrar a troca simulada.');
         return;
       }
-      setConsultaResult(data as ConsultaPublicResult);
+      setConsultaResult(data);
     } catch {
       setExchangeError('Erro de conexão ao registrar a troca simulada. Tente novamente.');
     } finally {
