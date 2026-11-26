@@ -56,6 +56,7 @@ function readWorkerRuntimeEnv(): RuntimeEnv {
     SUPABASE_SECRET_KEY: pick('SUPABASE_SECRET_KEY'),
     ADMIN_PASSCODE: pick('ADMIN_PASSCODE'),
     SESSION_SECRET: pick('SESSION_SECRET'),
+    DATA_ENCRYPTION_KEY: pick('DATA_ENCRYPTION_KEY'),
   };
 }
 

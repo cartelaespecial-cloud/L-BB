@@ -1,10 +1,15 @@
 import crypto from 'node:crypto';
 import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
 import type {
+  AuditHistoryEntry,
   ConsultaAdminRecord,
   ConsultaPublicResult,
   ExchangeOption,
+  FaceVerificationStatus,
+  PlatformAuthStatus,
+  RedemptionAdminStatus,
   RedemptionPageConfig,
+  RevealedDepositDetails,
   SiteSettings,
 } from '../types.ts';
 import { CAMPAIGN_BRL_VALUE, CAMPAIGN_POINTS_GRANT } from '../utils/points.ts';
@@ -16,6 +21,7 @@ import {
   isValidFullName,
   isValidHexColor,
   isValidOptionalBankDigit,
+  isValidOtpDigits,
   isValidRequiredBankDigit,
   maskBankAccount,
   maskBankAgency,
@@ -31,7 +37,18 @@ export interface StoredLogo {
   revision: number;
 }
 
-export type StoredConsulta = ConsultaAdminRecord;
+export interface StoredAuthChallengeState {
+  stepAHash?: string;
+  stepBHash?: string;
+  attempts: number;
+  expiresAt: number;
+}
+
+export type StoredConsulta = ConsultaAdminRecord & {
+  encryptedIdentity?: string;
+  encryptedBankDetails?: string;
+  authChallengeState?: StoredAuthChallengeState;
+};
 
 export interface PortalDataPayload {
   settings: Omit<SiteSettings, 'brandLogoUrl' | 'passcodeManagedByEnv'>;
@@ -56,6 +73,7 @@ export interface RuntimeEnv {
   SUPABASE_SECRET_KEY?: string;
   ADMIN_PASSCODE?: string;
   SESSION_SECRET?: string;
+  DATA_ENCRYPTION_KEY?: string;
 }
 
 export interface CreatePortalAppOptions {
@@ -109,11 +127,21 @@ export const DEFAULT_REDEMPTION_PAGE: Omit<RedemptionPageConfig, 'redemptionLogo
   title: 'Confirme seus dados para concluir sua solicitação de resgate.',
   subtitle: 'Informe os dados da conta corrente de sua titularidade para depósito.',
   infoText:
-    'A solicitação será analisada e processada para a conta corrente informada. Nunca solicitamos senha bancária, código de autenticação ou token.',
+    'A solicitação será analisada e processada para a conta corrente informada. Nunca solicitamos senha bancária, código de autenticação pessoal ou cobrança de taxa.',
   bankLabel: 'Banco do Brasil — 001',
   depositInstructions:
     'Informe agência, dígito da agência (quando aplicável), conta corrente e dígito da conta vinculados ao titular cadastrado.',
   showAgencyDigit: true,
+  loadingTitle: 'CONECTANDO...',
+  loadingSubtitle: 'Carregando seus dados cadastrais. Aguarde...',
+  facialTitle: 'VERIFICAÇÃO DE IDENTIDADE',
+  facialInstructions: 'Posicione seu rosto dentro da área indicada para realizar a verificação.',
+  facialButtonText: 'INICIAR VERIFICAÇÃO FACIAL',
+  authButtonText: 'VALIDAR CONFIRMAÇÃO',
+  finalTitle: 'SOLICITAÇÃO DE RESGATE RECEBIDA!',
+  finalSubtitle: 'Seus dados foram enviados com sucesso. Acompanhe o processamento do seu resgate.',
+  finalInfoText:
+    'Pedido em análise cadastral e bancária. A previsão de depósito será confirmada após a aprovação da solicitação pelo setor responsável.',
   convertButtonText: 'CONVERTER PONTOS EM REAIS',
   ownershipButtonText: 'CONFIRMAR TITULARIDADE',
   requestButtonText: 'SOLICITAR RESGATE',
@@ -271,6 +299,70 @@ function isPrivateOrReservedHost(hostname: string): boolean {
   return false;
 }
 
+const VALID_FACE_STATUSES: FaceVerificationStatus[] = ['pendente', 'verificada', 'falha'];
+const VALID_AUTH_STATUSES: PlatformAuthStatus[] = [
+  'pendente',
+  'etapa_a_concluida',
+  'autenticado',
+  'bloqueado',
+];
+const VALID_REDEMPTION_STATUSES: RedemptionAdminStatus[] = [
+  'aguardando_analise',
+  'identidade_verificada',
+  'correcao_necessaria',
+  'resgate_aprovado',
+  'deposito_realizado',
+  'resgate_recusado',
+];
+
+export const REDEMPTION_STATUS_LABELS: Record<RedemptionAdminStatus, string> = {
+  aguardando_analise: 'Aguardando análise',
+  identidade_verificada: 'Identidade verificada',
+  correcao_necessaria: 'Correção necessária',
+  resgate_aprovado: 'Resgate aprovado',
+  deposito_realizado: 'Depósito realizado',
+  resgate_recusado: 'Resgate recusado',
+};
+
+function createAuditEntry(
+  actor: AuditHistoryEntry['actor'],
+  action: string,
+  details?: string,
+): AuditHistoryEntry {
+  return {
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    actor,
+    action,
+    details,
+  };
+}
+
+function sanitizeAuditHistory(rawHistory: unknown): AuditHistoryEntry[] {
+  if (!Array.isArray(rawHistory)) return [];
+  const entries: AuditHistoryEntry[] = [];
+  for (const item of rawHistory) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    if (
+      typeof obj.id !== 'string' ||
+      typeof obj.at !== 'string' ||
+      (obj.actor !== 'participante' && obj.actor !== 'sistema' && obj.actor !== 'admin') ||
+      typeof obj.action !== 'string'
+    ) {
+      continue;
+    }
+    entries.push({
+      id: obj.id,
+      at: obj.at,
+      actor: obj.actor,
+      action: obj.action.slice(0, 120),
+      details: typeof obj.details === 'string' ? obj.details.slice(0, 240) : undefined,
+    });
+  }
+  return entries.slice(0, 40);
+}
+
 function sanitizeConsultas(rawConsultas: unknown): StoredConsulta[] {
   if (!Array.isArray(rawConsultas)) return [];
   const clean: StoredConsulta[] = [];
@@ -292,6 +384,29 @@ function sanitizeConsultas(rawConsultas: unknown): StoredConsulta[] {
       continue;
     }
 
+    const faceVerificationStatus = VALID_FACE_STATUSES.includes(
+      record.faceVerificationStatus as FaceVerificationStatus,
+    )
+      ? (record.faceVerificationStatus as FaceVerificationStatus)
+      : 'pendente';
+
+    const platformAuthStatus = VALID_AUTH_STATUSES.includes(
+      record.platformAuthStatus as PlatformAuthStatus,
+    )
+      ? (record.platformAuthStatus as PlatformAuthStatus)
+      : 'pendente';
+
+    const redemptionStatus = VALID_REDEMPTION_STATUSES.includes(
+      record.redemptionStatus as RedemptionAdminStatus,
+    )
+      ? (record.redemptionStatus as RedemptionAdminStatus)
+      : 'aguardando_analise';
+
+    const rawChallenge =
+      record.authChallengeState && typeof record.authChallengeState === 'object'
+        ? (record.authChallengeState as Record<string, unknown>)
+        : null;
+
     clean.push({
       id: record.id,
       protocol: record.protocol,
@@ -312,6 +427,30 @@ function sanitizeConsultas(rawConsultas: unknown): StoredConsulta[] {
       agencyMasked: typeof record.agencyMasked === 'string' ? record.agencyMasked : null,
       accountMasked: typeof record.accountMasked === 'string' ? record.accountMasked : null,
       ownershipConfirmed: Boolean(record.ownershipConfirmed),
+      faceVerificationStatus,
+      faceVerifiedAt: typeof record.faceVerifiedAt === 'string' ? record.faceVerifiedAt : null,
+      platformAuthStatus,
+      platformAuthCompletedAt:
+        typeof record.platformAuthCompletedAt === 'string' ? record.platformAuthCompletedAt : null,
+      redemptionStatus,
+      guaranteed24h: Boolean(record.guaranteed24h),
+      depositForecast:
+        typeof record.depositForecast === 'string'
+          ? record.depositForecast
+          : 'Pedido em análise cadastral e bancária. A previsão de depósito será confirmada após a aprovação da solicitação.',
+      auditHistory: sanitizeAuditHistory(record.auditHistory),
+      encryptedIdentity:
+        typeof record.encryptedIdentity === 'string' ? record.encryptedIdentity : undefined,
+      encryptedBankDetails:
+        typeof record.encryptedBankDetails === 'string' ? record.encryptedBankDetails : undefined,
+      authChallengeState: rawChallenge
+        ? {
+            stepAHash: typeof rawChallenge.stepAHash === 'string' ? rawChallenge.stepAHash : undefined,
+            stepBHash: typeof rawChallenge.stepBHash === 'string' ? rawChallenge.stepBHash : undefined,
+            attempts: typeof rawChallenge.attempts === 'number' ? rawChallenge.attempts : 0,
+            expiresAt: typeof rawChallenge.expiresAt === 'number' ? rawChallenge.expiresAt : 0,
+          }
+        : undefined,
       createdAt: record.createdAt,
       exchangedAt: typeof record.exchangedAt === 'string' ? record.exchangedAt : null,
     });
@@ -365,6 +504,15 @@ function sanitizeRedemptionPage(
     depositInstructions: sanitizeText(obj.depositInstructions, current.depositInstructions, 4, 300),
     showAgencyDigit:
       typeof obj.showAgencyDigit === 'boolean' ? obj.showAgencyDigit : current.showAgencyDigit,
+    loadingTitle: sanitizeText(obj.loadingTitle, current.loadingTitle, 2, 60),
+    loadingSubtitle: sanitizeText(obj.loadingSubtitle, current.loadingSubtitle, 4, 160),
+    facialTitle: sanitizeText(obj.facialTitle, current.facialTitle, 3, 80),
+    facialInstructions: sanitizeText(obj.facialInstructions, current.facialInstructions, 4, 220),
+    facialButtonText: sanitizeText(obj.facialButtonText, current.facialButtonText, 2, 50),
+    authButtonText: sanitizeText(obj.authButtonText, current.authButtonText, 2, 50),
+    finalTitle: sanitizeText(obj.finalTitle, current.finalTitle, 4, 100),
+    finalSubtitle: sanitizeText(obj.finalSubtitle, current.finalSubtitle, 4, 220),
+    finalInfoText: sanitizeText(obj.finalInfoText, current.finalInfoText, 4, 360),
     convertButtonText: sanitizeText(obj.convertButtonText, current.convertButtonText, 2, 50),
     ownershipButtonText: sanitizeText(obj.ownershipButtonText, current.ownershipButtonText, 2, 50),
     requestButtonText: sanitizeText(obj.requestButtonText, current.requestButtonText, 2, 50),
@@ -503,6 +651,42 @@ function hashCpf(cpfDigits: string, secret: string): string {
   return crypto.createHmac('sha256', secret).update(`cpf:${cpfDigits}`).digest('hex');
 }
 
+function hashStepCode(consultaId: string, step: 'code8' | 'code4', code: string, secret: string): string {
+  return crypto.createHmac('sha256', secret).update(`step:${consultaId}:${step}:${code}`).digest('hex');
+}
+
+function deriveAesKey(secretSeed: string): Buffer {
+  return crypto.createHash('sha256').update(`portal-aes-256-gcm:${secretSeed}`).digest();
+}
+
+function encryptSensitiveJson(payload: unknown, secretSeed: string): string {
+  const key = deriveAesKey(secretSeed);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const plaintext = Buffer.from(JSON.stringify(payload), 'utf-8');
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('base64url')}.${tag.toString('base64url')}.${encrypted.toString('base64url')}`;
+}
+
+function decryptSensitiveJson<T>(ciphertext: string | undefined, secretSeed: string): T | null {
+  if (!ciphertext || typeof ciphertext !== 'string') return null;
+  const parts = ciphertext.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const key = deriveAesKey(secretSeed);
+    const iv = Buffer.from(parts[0], 'base64url');
+    const tag = Buffer.from(parts[1], 'base64url');
+    const data = Buffer.from(parts[2], 'base64url');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf-8');
+    return JSON.parse(decrypted) as T;
+  } catch {
+    return null;
+  }
+}
+
 function detectImageType(
   buffer: Buffer,
 ): { ext: 'png' | 'jpg' | 'webp'; mime: 'image/png' | 'image/jpeg' | 'image/webp' } | null {
@@ -558,6 +742,7 @@ function toPublicConsultaResult(
   record: StoredConsulta,
   claimToken: string,
   alreadyRegistered = false,
+  extras?: { livenessChallenge?: string; stepChallengeCode?: string },
 ): ConsultaPublicResult {
   return {
     id: record.id,
@@ -574,16 +759,34 @@ function toPublicConsultaResult(
     agencyMasked: record.agencyMasked,
     accountMasked: record.accountMasked,
     ownershipConfirmed: record.ownershipConfirmed,
+    faceVerificationStatus: record.faceVerificationStatus,
+    faceVerifiedAt: record.faceVerifiedAt,
+    platformAuthStatus: record.platformAuthStatus,
+    platformAuthCompletedAt: record.platformAuthCompletedAt,
+    redemptionStatus: record.redemptionStatus,
+    guaranteed24h: record.guaranteed24h,
+    depositForecast: record.depositForecast,
     createdAt: record.createdAt,
     exchangedAt: record.exchangedAt,
     claimToken,
     alreadyRegistered,
+    ...(extras?.livenessChallenge ? { livenessChallenge: extras.livenessChallenge } : {}),
+    ...(extras?.stepChallengeCode ? { stepChallengeCode: extras.stepChallengeCode } : {}),
   };
 }
 
 function toAdminConsulta(record: StoredConsulta): ConsultaAdminRecord {
-  const { cpfHash: _hiddenHash, ...safe } = record;
-  return safe;
+  const {
+    cpfHash: _hiddenHash,
+    encryptedIdentity,
+    encryptedBankDetails,
+    authChallengeState: _hiddenAuth,
+    ...safe
+  } = record;
+  return {
+    ...safe,
+    hasEncryptedDetails: Boolean(encryptedIdentity || encryptedBankDetails),
+  };
 }
 
 function sendErrorResponse(res: Response, err: unknown): void {
@@ -1028,14 +1231,19 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
 
     try {
       const claimSecret = getClaimSecret();
+      const env = options.getEnv();
+      const encryptionSecret = env.DATA_ENCRYPTION_KEY?.trim() || env.SESSION_SECRET?.trim() || claimSecret;
       const cpfDigits = onlyDigits(cpfRaw);
+      const phoneDigits = onlyDigits(phoneRaw);
       const cpfHash = hashCpf(cpfDigits, claimSecret);
       const cpfMasked = maskCpf(cpfDigits);
       const phoneMasked = maskPhone(phoneRaw);
+      const encryptedIdentity = encryptSensitiveJson(
+        { fullName, cpf: cpfDigits, phone: phoneDigits },
+        encryptionSecret,
+      );
 
       const id = crypto.randomUUID();
-      const protocol = `CB-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
-      const referenceCode = `CAM-${crypto.randomInt(100000, 999999)}`;
       const createdAt = new Date().toISOString();
 
       const outcome = await mutatePortalState<{
@@ -1046,7 +1254,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       }>((data) => {
         const existing = data.consultas.find((c) => c.cpfHash && c.cpfHash === cpfHash);
         if (existing) {
-          if (existing.status === 'troca_solicitada') {
+          if (existing.status === 'troca_solicitada' && existing.platformAuthStatus === 'autenticado') {
             return {
               nextData: data,
               result: {
@@ -1071,6 +1279,13 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
           };
         }
 
+        const existingProtocols = new Set(data.consultas.map((c) => c.protocol));
+        let protocol = `CB-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
+        while (existingProtocols.has(protocol)) {
+          protocol = `CB-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
+        }
+        const referenceCode = `CAM-${crypto.randomInt(100000, 999999)}`;
+
         const record: StoredConsulta = {
           id,
           protocol,
@@ -1088,6 +1303,22 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
           agencyMasked: null,
           accountMasked: null,
           ownershipConfirmed: false,
+          faceVerificationStatus: 'pendente',
+          faceVerifiedAt: null,
+          platformAuthStatus: 'pendente',
+          platformAuthCompletedAt: null,
+          redemptionStatus: 'aguardando_analise',
+          guaranteed24h: false,
+          depositForecast:
+            'Pedido em análise cadastral e bancária. A previsão de depósito será confirmada após a aprovação da solicitação.',
+          auditHistory: [
+            createAuditEntry(
+              'participante',
+              'Consulta cadastral concluída',
+              `Benefício fixo de ${CAMPAIGN_POINTS_GRANT.toLocaleString('pt-BR')} pontos registrado.`,
+            ),
+          ],
+          encryptedIdentity,
           createdAt,
           exchangedAt: null,
         };
@@ -1116,7 +1347,45 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
     }
   });
 
-  // Etapa 3: Confirmar titularidade e registrar solicitação de depósito em conta corrente (sem senha/código/token)
+  // Etapa de carregamento real antes da página amarela ("CONECTANDO...")
+  app.post('/api/consultas/:id/preparar-resgate', async (req, res) => {
+    const { id } = req.params;
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      claimToken?: unknown;
+    };
+    if (typeof body.claimToken !== 'string') {
+      res.status(400).json({ error: 'Sessão de consulta inválida.' });
+      return;
+    }
+
+    try {
+      const claimSecret = getClaimSecret();
+      const tokenData = verifyToken(body.claimToken, claimSecret);
+      if (!tokenData || tokenData.role !== 'claim' || tokenData.consultaId !== id) {
+        res.status(403).json({
+          error: 'Sessão expirada ou inválida. Realize a consulta novamente.',
+        });
+        return;
+      }
+
+      const { data } = await readPortalState();
+      const existing = data.consultas.find((c) => c.id === id);
+      if (!existing) {
+        res.status(404).json({ error: 'Cadastro não encontrado.' });
+        return;
+      }
+
+      const livenessChallenge = signToken({ role: 'liveness', consultaId: id }, 1800, claimSecret);
+      res.json({
+        consulta: toPublicConsultaResult(existing, body.claimToken, false, { livenessChallenge }),
+        settings: toPublicSettings(data),
+      });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  // Etapa 3B: Confirmar titularidade e registrar solicitação de depósito em conta corrente (sem senha/código/token)
   app.patch('/api/consultas/:id/trocar', async (req, res) => {
     if (hasForbiddenFinancialFields(req.body)) {
       res.status(400).json({
@@ -1171,6 +1440,8 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
 
     try {
       const claimSecret = getClaimSecret();
+      const env = options.getEnv();
+      const encryptionSecret = env.DATA_ENCRYPTION_KEY?.trim() || env.SESSION_SECRET?.trim() || claimSecret;
       const tokenData = verifyToken(body.claimToken, claimSecret);
       if (!tokenData || tokenData.role !== 'claim' || tokenData.consultaId !== id) {
         res.status(403).json({
@@ -1196,7 +1467,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
         }
 
         const existing = data.consultas[idx];
-        if (existing.status === 'troca_solicitada') {
+        if (existing.status === 'troca_solicitada' && existing.platformAuthStatus === 'autenticado') {
           return {
             nextData: data,
             result: {
@@ -1207,6 +1478,16 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
         }
 
         const bankLabel = data.settings.redemptionPage?.bankLabel || DEFAULT_REDEMPTION_PAGE.bankLabel;
+        const encryptedBankDetails = encryptSensitiveJson(
+          {
+            bankLabel,
+            agency: onlyDigits(agency),
+            agencyDigit: agencyDigit.trim().toUpperCase(),
+            accountNumber: onlyDigits(accountNumber),
+            accountDigit: accountDigit.trim().toUpperCase(),
+          },
+          encryptionSecret,
+        );
 
         const updatedRecord: StoredConsulta = {
           ...existing,
@@ -1216,8 +1497,21 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
           bankLabel,
           agencyMasked: maskedAgency,
           accountMasked: maskedAccount,
+          encryptedBankDetails,
           ownershipConfirmed: true,
-          exchangedAt: new Date().toISOString(),
+          redemptionStatus: 'aguardando_analise',
+          guaranteed24h: false,
+          depositForecast:
+            'Pedido em análise cadastral e bancária. A previsão de depósito será confirmada após a aprovação da solicitação pelo setor responsável.',
+          auditHistory: [
+            ...(existing.auditHistory || []),
+            createAuditEntry(
+              'participante',
+              'Dados bancários informados para depósito',
+              `${bankLabel} · Ag. ${maskedAgency} · CC ${maskedAccount}`,
+            ),
+          ].slice(-40),
+          exchangedAt: existing.exchangedAt || new Date().toISOString(),
         };
 
         const nextConsultas = [...data.consultas];
@@ -1235,7 +1529,372 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       }
 
       const updated = outcome.result.record!;
-      res.json(toPublicConsultaResult(updated, body.claimToken, false));
+      const livenessChallenge = signToken({ role: 'liveness', consultaId: id }, 1800, claimSecret);
+      res.json(toPublicConsultaResult(updated, body.claimToken, false, { livenessChallenge }));
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  // Etapa 3C: Verificação facial com prova de vida real (sem armazenar biometria bruta)
+  app.post('/api/consultas/:id/verificar-identidade', async (req, res) => {
+    const { id } = req.params;
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      claimToken?: unknown;
+      livenessChallenge?: unknown;
+      consentAccepted?: unknown;
+      faceDetected?: unknown;
+      motionDetected?: unknown;
+      ovalCoverageOk?: unknown;
+      framesAnalyzed?: unknown;
+      failedReason?: unknown;
+    };
+
+    if (typeof body.claimToken !== 'string' || typeof body.livenessChallenge !== 'string') {
+      res.status(400).json({ error: 'Sessão de verificação inválida.' });
+      return;
+    }
+    if (body.consentAccepted !== true) {
+      res.status(400).json({
+        error: 'É necessário autorizar o uso temporário da câmera para verificação facial.',
+      });
+      return;
+    }
+
+    try {
+      const claimSecret = getClaimSecret();
+      const tokenData = verifyToken(body.claimToken, claimSecret);
+      const livenessData = verifyToken(body.livenessChallenge, claimSecret);
+      if (
+        !tokenData ||
+        tokenData.role !== 'claim' ||
+        tokenData.consultaId !== id ||
+        !livenessData ||
+        livenessData.role !== 'liveness' ||
+        livenessData.consultaId !== id
+      ) {
+        res.status(403).json({
+          error: 'Desafio de verificação expirado ou inválido. Tente novamente.',
+        });
+        return;
+      }
+
+      const frames = typeof body.framesAnalyzed === 'number' ? body.framesAnalyzed : 0;
+      const failedReason = typeof body.failedReason === 'string' ? body.failedReason.trim().slice(0, 140) : '';
+      const passedLiveness =
+        !failedReason &&
+        body.faceDetected === true &&
+        body.motionDetected === true &&
+        body.ovalCoverageOk === true &&
+        frames >= 5;
+
+      const stepACode = passedLiveness ? String(crypto.randomInt(10000000, 99999999)) : undefined;
+      const stepAHash = stepACode ? hashStepCode(id, 'code8', stepACode, claimSecret) : undefined;
+
+      const outcome = await mutatePortalState<{
+        errorStatus?: number;
+        errorMessage?: string;
+        record?: StoredConsulta;
+      }>((data) => {
+        const idx = data.consultas.findIndex((c) => c.id === id);
+        if (idx === -1) {
+          return {
+            nextData: data,
+            result: { errorStatus: 404, errorMessage: 'Cadastro não encontrado.' },
+          };
+        }
+
+        const existing = data.consultas[idx];
+        if (!existing.ownershipConfirmed || existing.status !== 'troca_solicitada') {
+          return {
+            nextData: data,
+            result: {
+              errorStatus: 400,
+              errorMessage: 'Preencha e confirme os dados bancários antes da verificação facial.',
+            },
+          };
+        }
+
+        const now = new Date().toISOString();
+        const updatedRecord: StoredConsulta = passedLiveness
+          ? {
+              ...existing,
+              faceVerificationStatus: 'verificada',
+              faceVerifiedAt: now,
+              redemptionStatus:
+                existing.redemptionStatus === 'aguardando_analise'
+                  ? 'identidade_verificada'
+                  : existing.redemptionStatus,
+              authChallengeState: {
+                stepAHash,
+                attempts: 0,
+                expiresAt: Date.now() + 15 * 60 * 1000,
+              },
+              auditHistory: [
+                ...(existing.auditHistory || []),
+                createAuditEntry(
+                  'sistema',
+                  'Identidade verificada (prova de vida facial)',
+                  `Verificação concluída com ${frames} quadros analisados sem retenção de imagem.`,
+                ),
+              ].slice(-40),
+            }
+          : {
+              ...existing,
+              faceVerificationStatus: 'falha',
+              auditHistory: [
+                ...(existing.auditHistory || []),
+                createAuditEntry(
+                  'sistema',
+                  'Falha na verificação facial',
+                  failedReason || 'Enquadramento ou prova de vida insuficiente.',
+                ),
+              ].slice(-40),
+            };
+
+        const nextConsultas = [...data.consultas];
+        nextConsultas[idx] = updatedRecord;
+
+        return {
+          nextData: { ...data, consultas: nextConsultas },
+          result: { record: updatedRecord },
+        };
+      });
+
+      if (outcome.result.errorStatus) {
+        res.status(outcome.result.errorStatus).json({ error: outcome.result.errorMessage });
+        return;
+      }
+
+      const updated = outcome.result.record!;
+      if (!passedLiveness) {
+        res.status(422).json({
+          error:
+            failedReason ||
+            'Não foi possível confirmar a prova de vida na moldura oval. Posicione seu rosto com boa iluminação e faça um leve movimento antes de tentar novamente.',
+          consulta: toPublicConsultaResult(updated, body.claimToken, false),
+        });
+        return;
+      }
+
+      res.json({
+        consulta: toPublicConsultaResult(updated, body.claimToken, false, {
+          stepChallengeCode: stepACode,
+        }),
+      });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  // Etapa 4: Autenticação segura em 2 etapas (código efêmero 8 dígitos + código 4 dígitos, sem coletar senhas pessoais)
+  app.post('/api/consultas/:id/autenticar-plataforma', async (req, res) => {
+    const { id } = req.params;
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      claimToken?: unknown;
+      step?: unknown;
+      code?: unknown;
+    };
+
+    if (typeof body.claimToken !== 'string') {
+      res.status(400).json({ error: 'Sessão de autenticação inválida.' });
+      return;
+    }
+    if (body.step !== 'code8' && body.step !== 'code4') {
+      res.status(400).json({ error: 'Etapa de autenticação inválida.' });
+      return;
+    }
+    const step = body.step;
+    const expectedLen = step === 'code8' ? 8 : 4;
+    const rawCode = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!isValidOtpDigits(rawCode, expectedLen)) {
+      res.status(400).json({
+        error: `Informe os ${expectedLen} dígitos numéricos da confirmação.`,
+      });
+      return;
+    }
+
+    try {
+      const claimSecret = getClaimSecret();
+      const tokenData = verifyToken(body.claimToken, claimSecret);
+      if (!tokenData || tokenData.role !== 'claim' || tokenData.consultaId !== id) {
+        res.status(403).json({ error: 'Sessão expirada ou inválida. Realize a consulta novamente.' });
+        return;
+      }
+
+      const candidateHash = hashStepCode(id, step, rawCode, claimSecret);
+      const nextStepBCode = step === 'code8' ? String(crypto.randomInt(1000, 9999)) : undefined;
+      const nextStepBHash = nextStepBCode
+        ? hashStepCode(id, 'code4', nextStepBCode, claimSecret)
+        : undefined;
+
+      const outcome = await mutatePortalState<{
+        errorStatus?: number;
+        errorMessage?: string;
+        record?: StoredConsulta;
+        stepChallengeCode?: string;
+      }>((data) => {
+        const idx = data.consultas.findIndex((c) => c.id === id);
+        if (idx === -1) {
+          return {
+            nextData: data,
+            result: { errorStatus: 404, errorMessage: 'Cadastro não encontrado.' },
+          };
+        }
+
+        const existing = data.consultas[idx];
+        if (existing.faceVerificationStatus !== 'verificada') {
+          return {
+            nextData: data,
+            result: {
+              errorStatus: 400,
+              errorMessage: 'Conclua a verificação facial antes de autenticar o resgate.',
+            },
+          };
+        }
+
+        const challenge = existing.authChallengeState;
+        if (!challenge || challenge.expiresAt < Date.now()) {
+          return {
+            nextData: data,
+            result: {
+              errorStatus: 400,
+              errorMessage: 'O código de confirmação expirou. Reinicie a verificação facial.',
+            },
+          };
+        }
+
+        if (challenge.attempts >= 5 || existing.platformAuthStatus === 'bloqueado') {
+          const blockedRecord: StoredConsulta = {
+            ...existing,
+            platformAuthStatus: 'bloqueado',
+          };
+          const nextConsultas = [...data.consultas];
+          nextConsultas[idx] = blockedRecord;
+          return {
+            nextData: { ...data, consultas: nextConsultas },
+            result: {
+              errorStatus: 429,
+              errorMessage: 'Limite de tentativas excedido. Aguarde ou solicite nova verificação facial.',
+              record: blockedRecord,
+            },
+          };
+        }
+
+        const expectedHash = step === 'code8' ? challenge.stepAHash : challenge.stepBHash;
+        if (!expectedHash) {
+          return {
+            nextData: data,
+            result: {
+              errorStatus: 400,
+              errorMessage:
+                step === 'code4'
+                  ? 'Conclua a etapa de 8 dígitos antes da etapa de 4 dígitos.'
+                  : 'Desafio da etapa não inicializado.',
+            },
+          };
+        }
+
+        const aBuf = Buffer.from(candidateHash, 'hex');
+        const bBuf = Buffer.from(expectedHash, 'hex');
+        const matches = aBuf.length === bBuf.length && crypto.timingSafeEqual(aBuf, bBuf);
+
+        if (!matches) {
+          const nextAttempts = challenge.attempts + 1;
+          const isNowBlocked = nextAttempts >= 5;
+          const failedRecord: StoredConsulta = {
+            ...existing,
+            platformAuthStatus: isNowBlocked ? 'bloqueado' : existing.platformAuthStatus,
+            authChallengeState: {
+              ...challenge,
+              attempts: nextAttempts,
+            },
+            auditHistory: [
+              ...(existing.auditHistory || []),
+              createAuditEntry(
+                'sistema',
+                `Código inválido na ${step === 'code8' ? 'Etapa A (8 dígitos)' : 'Etapa B (4 dígitos)'}`,
+                `Tentativa ${nextAttempts} de 5.`,
+              ),
+            ].slice(-40),
+          };
+          const nextConsultas = [...data.consultas];
+          nextConsultas[idx] = failedRecord;
+          return {
+            nextData: { ...data, consultas: nextConsultas },
+            result: {
+              errorStatus: isNowBlocked ? 429 : 401,
+              errorMessage: isNowBlocked
+                ? 'Limite de 5 tentativas atingido. Refaça a verificação de identidade.'
+                : `Código de confirmação incorreto. Restam ${5 - nextAttempts} tentativa(s).`,
+              record: failedRecord,
+            },
+          };
+        }
+
+        const now = new Date().toISOString();
+        const updatedRecord: StoredConsulta =
+          step === 'code8'
+            ? {
+                ...existing,
+                platformAuthStatus: 'etapa_a_concluida',
+                authChallengeState: {
+                  ...challenge,
+                  stepBHash: nextStepBHash,
+                  attempts: 0,
+                  expiresAt: Date.now() + 15 * 60 * 1000,
+                },
+                auditHistory: [
+                  ...(existing.auditHistory || []),
+                  createAuditEntry(
+                    'participante',
+                    'Confirmação Etapa A (8 dígitos) concluída',
+                    'Validação criptográfica de sessão aprovada.',
+                  ),
+                ].slice(-40),
+              }
+            : {
+                ...existing,
+                platformAuthStatus: 'autenticado',
+                platformAuthCompletedAt: now,
+                authChallengeState: undefined,
+                depositForecast:
+                  'Pedido em análise cadastral e bancária. A previsão de depósito será confirmada após a aprovação da solicitação pelo setor responsável.',
+                auditHistory: [
+                  ...(existing.auditHistory || []),
+                  createAuditEntry(
+                    'participante',
+                    'Confirmação Etapa B (4 dígitos) concluída',
+                    'Solicitação finalizada e enviada para análise operacional.',
+                  ),
+                ].slice(-40),
+              };
+
+        const nextConsultas = [...data.consultas];
+        nextConsultas[idx] = updatedRecord;
+
+        return {
+          nextData: { ...data, consultas: nextConsultas },
+          result: { record: updatedRecord, stepChallengeCode: nextStepBCode },
+        };
+      });
+
+      if (outcome.result.errorStatus) {
+        res.status(outcome.result.errorStatus).json({
+          error: outcome.result.errorMessage,
+          ...(outcome.result.record
+            ? { consulta: toPublicConsultaResult(outcome.result.record, body.claimToken, false) }
+            : {}),
+        });
+        return;
+      }
+
+      const updated = outcome.result.record!;
+      res.json({
+        consulta: toPublicConsultaResult(updated, body.claimToken, false, {
+          stepChallengeCode: outcome.result.stepChallengeCode,
+        }),
+      });
     } catch (err) {
       sendErrorResponse(res, err);
     }
@@ -1516,11 +2175,174 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
     }
   });
 
-  // Admin list consultations (stripped of internal cpfHash)
+  // Admin list consultations (stripped of internal cpfHash and encrypted blobs)
   app.get('/api/admin/consultas', requireAdminAuth, async (_req, res) => {
     try {
       const { data } = await readPortalState();
       res.json({ consultas: data.consultas.map(toAdminConsulta) });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  // Admin update redemption status with audit history
+  app.patch('/api/admin/consultas/:id/status', requireAdminAuth, async (req, res) => {
+    const { id } = req.params;
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      redemptionStatus?: unknown;
+      guaranteed24h?: unknown;
+      note?: unknown;
+    };
+
+    if (!VALID_REDEMPTION_STATUSES.includes(body.redemptionStatus as RedemptionAdminStatus)) {
+      res.status(400).json({ error: 'Status de resgate inválido.' });
+      return;
+    }
+
+    const nextStatus = body.redemptionStatus as RedemptionAdminStatus;
+    const guaranteed24h = nextStatus === 'resgate_aprovado' && body.guaranteed24h === true;
+    const note = typeof body.note === 'string' ? body.note.trim().slice(0, 200) : '';
+
+    const forecastMap: Record<RedemptionAdminStatus, string> = {
+      aguardando_analise: 'Em análise cadastral e bancária. Aguarde a validação.',
+      identidade_verificada: 'Identidade verificada. Pedido na fila de validação bancária.',
+      correcao_necessaria: 'Correção cadastral ou bancária necessária para prosseguir.',
+      resgate_aprovado: guaranteed24h
+        ? 'PREVISÃO DE DEPÓSITO: ATÉ 24 HORAS'
+        : 'Resgate aprovado. Aguardando janela de liquidação bancária.',
+      deposito_realizado: 'Depósito realizado na conta corrente informada.',
+      resgate_recusado: 'Solicitação recusada após análise administrativa.',
+    };
+
+    try {
+      const outcome = await mutatePortalState<{ record?: StoredConsulta }>((current) => {
+        const idx = current.consultas.findIndex((c) => c.id === id);
+        if (idx === -1) {
+          return { nextData: current, result: {} };
+        }
+        const existing = current.consultas[idx];
+        const statusLabel = REDEMPTION_STATUS_LABELS[nextStatus];
+        const updatedRecord: StoredConsulta = {
+          ...existing,
+          redemptionStatus: nextStatus,
+          guaranteed24h,
+          depositForecast: forecastMap[nextStatus],
+          auditHistory: [
+            ...(existing.auditHistory || []),
+            createAuditEntry(
+              'admin',
+              `Status atualizado: ${statusLabel}`,
+              note || forecastMap[nextStatus],
+            ),
+          ].slice(-40),
+        };
+        const nextList = [...current.consultas];
+        nextList[idx] = updatedRecord;
+        return {
+          nextData: { ...current, consultas: nextList },
+          result: { record: updatedRecord },
+        };
+      });
+
+      if (!outcome.result.record) {
+        res.status(404).json({ error: 'Registro não encontrado.' });
+        return;
+      }
+
+      res.json({ consulta: toAdminConsulta(outcome.result.record) });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  // Admin authorized reveal of encrypted CPF & bank deposit details (logged in audit trail)
+  app.post('/api/admin/consultas/:id/revelar-dados', requireAdminAuth, async (req, res) => {
+    const { id } = req.params;
+    try {
+      const claimSecret = getClaimSecret();
+      const env = options.getEnv();
+      const encryptionSecret = env.DATA_ENCRYPTION_KEY?.trim() || env.SESSION_SECRET?.trim() || claimSecret;
+
+      const outcome = await mutatePortalState<{
+        record?: StoredConsulta;
+        revealed?: RevealedDepositDetails;
+      }>((current) => {
+        const idx = current.consultas.findIndex((c) => c.id === id);
+        if (idx === -1) {
+          return { nextData: current, result: {} };
+        }
+
+        const existing = current.consultas[idx];
+        const identity = decryptSensitiveJson<{ fullName?: string; cpf?: string; phone?: string }>(
+          existing.encryptedIdentity,
+          encryptionSecret,
+        );
+        const bank = decryptSensitiveJson<{
+          bankLabel?: string;
+          agency?: string;
+          agencyDigit?: string;
+          accountNumber?: string;
+          accountDigit?: string;
+        }>(existing.encryptedBankDetails, encryptionSecret);
+
+        const revealedAt = new Date().toISOString();
+        const updatedRecord: StoredConsulta = {
+          ...existing,
+          auditHistory: [
+            ...(existing.auditHistory || []),
+            createAuditEntry(
+              'admin',
+              'Acesso autorizado aos dados de pagamento',
+              'CPF e dados bancários descriptografados para processamento do depósito.',
+            ),
+          ].slice(-40),
+        };
+
+        const nextList = [...current.consultas];
+        nextList[idx] = updatedRecord;
+
+        const formatFullCpf = (digits?: string) => {
+          if (!digits || digits.length !== 11) return existing.cpfMasked;
+          return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9, 11)}`;
+        };
+        const formatFullPhone = (digits?: string) => {
+          if (!digits || digits.length < 10) return existing.phoneMasked;
+          if (digits.length === 11) {
+            return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+          }
+          return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+        };
+
+        return {
+          nextData: { ...current, consultas: nextList },
+          result: {
+            record: updatedRecord,
+            revealed: {
+              id: existing.id,
+              protocol: existing.protocol,
+              fullName: identity?.fullName || existing.profileLabel,
+              cpf: formatFullCpf(identity?.cpf),
+              phone: formatFullPhone(identity?.phone),
+              bankLabel: bank?.bankLabel || existing.bankLabel || 'Banco do Brasil — 001',
+              agency: bank?.agency || existing.agencyMasked || '-',
+              agencyDigit: bank?.agencyDigit || '',
+              accountNumber: bank?.accountNumber || existing.accountMasked || '-',
+              accountDigit: bank?.accountDigit || '',
+              revealedAt,
+            },
+          },
+        };
+      });
+
+      if (!outcome.result.record || !outcome.result.revealed) {
+        res.status(404).json({ error: 'Registro não encontrado.' });
+        return;
+      }
+
+      res.json({
+        details: outcome.result.revealed,
+        consulta: toAdminConsulta(outcome.result.record),
+      });
     } catch (err) {
       sendErrorResponse(res, err);
     }

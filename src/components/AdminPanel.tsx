@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type For
 import {
   AlertCircle,
   CheckCircle2,
+  ClipboardCheck,
+  Clock,
   Download,
   ExternalLink,
   Eye,
@@ -13,10 +15,16 @@ import {
   LogOut,
   Palette,
   Search,
+  ShieldCheck,
   Trash2,
   Upload,
 } from 'lucide-react';
-import type { ConsultaAdminRecord, SiteSettings } from '../types';
+import type {
+  ConsultaAdminRecord,
+  RedemptionAdminStatus,
+  RevealedDepositDetails,
+  SiteSettings,
+} from '../types';
 import { CAMPAIGN_BRL_VALUE, calculateConvertedBrl, formatBrl } from '../utils/points';
 import { isValidHexColor } from '../utils/validation';
 import { BrandMark } from './BrandMark';
@@ -30,8 +38,30 @@ interface AdminPanelProps {
   onNavigate: (path: string) => void;
 }
 
-type AdminTab = 'marca' | 'resgate' | 'consultas' | 'seguranca';
+type AdminTab = 'marca' | 'resgate' | 'solicitacoes' | 'consultas' | 'seguranca';
 type StatusFilter = 'todas' | 'consultado' | 'troca_solicitada';
+
+const REDEMPTION_STATUS_OPTIONS: Array<{ value: RedemptionAdminStatus; label: string }> = [
+  { value: 'aguardando_analise', label: 'Aguardando análise' },
+  { value: 'identidade_verificada', label: 'Identidade verificada' },
+  { value: 'correcao_necessaria', label: 'Correção necessária' },
+  { value: 'resgate_aprovado', label: 'Resgate aprovado' },
+  { value: 'deposito_realizado', label: 'Depósito realizado' },
+  { value: 'resgate_recusado', label: 'Resgate recusado' },
+];
+
+const FACE_STATUS_LABELS: Record<ConsultaAdminRecord['faceVerificationStatus'], string> = {
+  pendente: 'Pendente',
+  verificada: 'Identidade verificada',
+  falha: 'Falha na verificação',
+};
+
+const AUTH_STATUS_LABELS: Record<ConsultaAdminRecord['platformAuthStatus'], string> = {
+  pendente: 'Pendente',
+  etapa_a_concluida: 'Etapa A concluída',
+  autenticado: 'Autenticação concluída',
+  bloqueado: 'Bloqueada por tentativas',
+};
 
 function escapeCsvCell(value: string | number | null | undefined): string {
   const raw = String(value ?? '');
@@ -83,6 +113,15 @@ export function AdminPanel({
   const [bankLabel, setBankLabel] = useState(settings.redemptionPage.bankLabel);
   const [depositInstructions, setDepositInstructions] = useState(settings.redemptionPage.depositInstructions);
   const [showAgencyDigit, setShowAgencyDigit] = useState(settings.redemptionPage.showAgencyDigit);
+  const [loadingTitle, setLoadingTitle] = useState(settings.redemptionPage.loadingTitle);
+  const [loadingSubtitle, setLoadingSubtitle] = useState(settings.redemptionPage.loadingSubtitle);
+  const [facialTitle, setFacialTitle] = useState(settings.redemptionPage.facialTitle);
+  const [facialInstructions, setFacialInstructions] = useState(settings.redemptionPage.facialInstructions);
+  const [facialButtonText, setFacialButtonText] = useState(settings.redemptionPage.facialButtonText);
+  const [authButtonText, setAuthButtonText] = useState(settings.redemptionPage.authButtonText);
+  const [finalTitle, setFinalTitle] = useState(settings.redemptionPage.finalTitle);
+  const [finalSubtitle, setFinalSubtitle] = useState(settings.redemptionPage.finalSubtitle);
+  const [finalInfoText, setFinalInfoText] = useState(settings.redemptionPage.finalInfoText);
   const [convertButtonText, setConvertButtonText] = useState(settings.redemptionPage.convertButtonText);
   const [ownershipButtonText, setOwnershipButtonText] = useState(settings.redemptionPage.ownershipButtonText);
   const [requestButtonText, setRequestButtonText] = useState(settings.redemptionPage.requestButtonText);
@@ -94,12 +133,25 @@ export function AdminPanel({
   const [redemptionLogoFeedback, setRedemptionLogoFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const redemptionFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Consultas state
+  // Consultas & Solicitações de Resgate state
   const [consultas, setConsultas] = useState<ConsultaAdminRecord[]>([]);
   const [loadingConsultas, setLoadingConsultas] = useState(false);
   const [consultasError, setConsultasError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('todas');
+
+  // Solicitações de Resgate filters & protected actions
+  const [reqSearch, setReqSearch] = useState('');
+  const [reqDateFilter, setReqDateFilter] = useState('');
+  const [reqStatusFilter, setReqStatusFilter] = useState<'todos' | RedemptionAdminStatus>('todos');
+  const [revealedMap, setRevealedMap] = useState<Record<string, RevealedDepositDetails>>({});
+  const [revealingId, setRevealingId] = useState<string | null>(null);
+  const [statusDrafts, setStatusDrafts] = useState<
+    Record<string, { status: RedemptionAdminStatus; guaranteed24h: boolean; note: string }>
+  >({});
+  const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
+  const [reqFeedback, setReqFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
 
   // Security / passcode change state
   const [currentPasscode, setCurrentPasscode] = useState('');
@@ -126,6 +178,15 @@ export function AdminPanel({
     setBankLabel(settings.redemptionPage.bankLabel);
     setDepositInstructions(settings.redemptionPage.depositInstructions);
     setShowAgencyDigit(settings.redemptionPage.showAgencyDigit);
+    setLoadingTitle(settings.redemptionPage.loadingTitle);
+    setLoadingSubtitle(settings.redemptionPage.loadingSubtitle);
+    setFacialTitle(settings.redemptionPage.facialTitle);
+    setFacialInstructions(settings.redemptionPage.facialInstructions);
+    setFacialButtonText(settings.redemptionPage.facialButtonText);
+    setAuthButtonText(settings.redemptionPage.authButtonText);
+    setFinalTitle(settings.redemptionPage.finalTitle);
+    setFinalSubtitle(settings.redemptionPage.finalSubtitle);
+    setFinalInfoText(settings.redemptionPage.finalInfoText);
     setConvertButtonText(settings.redemptionPage.convertButtonText);
     setOwnershipButtonText(settings.redemptionPage.ownershipButtonText);
     setRequestButtonText(settings.redemptionPage.requestButtonText);
@@ -134,7 +195,7 @@ export function AdminPanel({
 
   useEffect(() => {
     if (!adminToken) return;
-    if (activeTab === 'consultas') {
+    if (activeTab === 'consultas' || activeTab === 'solicitacoes') {
       void fetchConsultas();
     }
   }, [adminToken, activeTab]);
@@ -366,6 +427,15 @@ export function AdminPanel({
             bankLabel: bankLabel.trim(),
             depositInstructions: depositInstructions.trim(),
             showAgencyDigit,
+            loadingTitle: loadingTitle.trim(),
+            loadingSubtitle: loadingSubtitle.trim(),
+            facialTitle: facialTitle.trim(),
+            facialInstructions: facialInstructions.trim(),
+            facialButtonText: facialButtonText.trim(),
+            authButtonText: authButtonText.trim(),
+            finalTitle: finalTitle.trim(),
+            finalSubtitle: finalSubtitle.trim(),
+            finalInfoText: finalInfoText.trim(),
             convertButtonText: convertButtonText.trim(),
             ownershipButtonText: ownershipButtonText.trim(),
             requestButtonText: requestButtonText.trim(),
@@ -513,6 +583,103 @@ export function AdminPanel({
     return matched?.rateLabel ?? settings.exchangeOptions[0]?.rateLabel ?? '1.000 pts = R$ 50,00';
   }
 
+  async function handleRevealDepositDetails(id: string): Promise<void> {
+    if (!adminToken) return;
+    if (revealedMap[id]) {
+      setRevealedMap((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      return;
+    }
+
+    setRevealingId(id);
+    setReqFeedback(null);
+    try {
+      const response = await fetch(`/api/admin/consultas/${encodeURIComponent(id)}/revelar-dados`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (response.status === 401) {
+        onLogout();
+        return;
+      }
+      const data = (await response.json()) as {
+        details?: RevealedDepositDetails;
+        consulta?: ConsultaAdminRecord;
+        error?: string;
+      };
+      if (!response.ok || !data.details) {
+        setReqFeedback({ type: 'err', text: data.error || 'Não foi possível descriptografar os dados.' });
+        return;
+      }
+      setRevealedMap((prev) => ({ ...prev, [id]: data.details! }));
+      if (data.consulta) {
+        setConsultas((prev) => prev.map((c) => (c.id === id ? data.consulta! : c)));
+      }
+    } catch {
+      setReqFeedback({ type: 'err', text: 'Erro de conexão ao acessar dados protegidos.' });
+    } finally {
+      setRevealingId(null);
+    }
+  }
+
+  async function handleUpdateRedemptionStatus(row: ConsultaAdminRecord): Promise<void> {
+    if (!adminToken) return;
+    const draft = statusDrafts[row.id] ?? {
+      status: row.redemptionStatus,
+      guaranteed24h: row.guaranteed24h,
+      note: '',
+    };
+
+    setUpdatingStatusId(row.id);
+    setReqFeedback(null);
+    try {
+      const response = await fetch(`/api/admin/consultas/${encodeURIComponent(row.id)}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+        body: JSON.stringify({
+          redemptionStatus: draft.status,
+          guaranteed24h: draft.status === 'resgate_aprovado' && draft.guaranteed24h,
+          note: draft.note.trim(),
+        }),
+      });
+      if (response.status === 401) {
+        onLogout();
+        return;
+      }
+      const data = (await response.json()) as {
+        consulta?: ConsultaAdminRecord;
+        error?: string;
+      };
+      if (!response.ok || !data.consulta) {
+        setReqFeedback({ type: 'err', text: data.error || 'Erro ao atualizar status da solicitação.' });
+        return;
+      }
+      setConsultas((prev) => prev.map((c) => (c.id === row.id ? data.consulta! : c)));
+      setStatusDrafts((prev) => ({
+        ...prev,
+        [row.id]: {
+          status: data.consulta!.redemptionStatus,
+          guaranteed24h: data.consulta!.guaranteed24h,
+          note: '',
+        },
+      }));
+      setReqFeedback({
+        type: 'ok',
+        text: `Status do protocolo ${row.protocol} atualizado e registrado no histórico.`,
+      });
+    } catch {
+      setReqFeedback({ type: 'err', text: 'Erro de conexão ao atualizar status.' });
+    } finally {
+      setUpdatingStatusId(null);
+    }
+  }
+
   function handleExportCsv(): void {
     const headers = [
       'Protocolo',
@@ -521,17 +688,22 @@ export function AdminPanel({
       'Telefone (Mascarado)',
       'Pontos',
       'Valor Equivalente',
-      'Status',
+      'Verificacao Facial',
+      'Autenticacao Plataforma',
+      'Status Resgate',
       'Banco',
-      'Agência (Mascarada)',
+      'Agencia (Mascarada)',
       'Conta Corrente (Mascarada)',
-      'Data Consulta',
+      'Data Solicitacao',
     ];
     const rows = filteredConsultas.map((c) => {
       const brl =
         typeof c.amountBrl === 'number' && Number.isFinite(c.amountBrl)
           ? c.amountBrl
           : calculateConvertedBrl(c.pointsAvailable, getRateLabelForRow(c));
+      const statusLabel =
+        REDEMPTION_STATUS_OPTIONS.find((opt) => opt.value === c.redemptionStatus)?.label ||
+        c.redemptionStatus;
       return [
         escapeCsvCell(c.protocol),
         escapeCsvCell(c.profileLabel),
@@ -539,11 +711,13 @@ export function AdminPanel({
         escapeCsvCell(c.phoneMasked || '(**) *****-****'),
         escapeCsvCell(c.pointsAvailable),
         escapeCsvCell(formatBrl(brl)),
-        escapeCsvCell(c.status === 'troca_solicitada' ? 'Em análise e processamento' : 'Consultado'),
+        escapeCsvCell(FACE_STATUS_LABELS[c.faceVerificationStatus] || c.faceVerificationStatus),
+        escapeCsvCell(AUTH_STATUS_LABELS[c.platformAuthStatus] || c.platformAuthStatus),
+        escapeCsvCell(statusLabel),
         escapeCsvCell(c.bankLabel || '-'),
         escapeCsvCell(c.agencyMasked || '-'),
         escapeCsvCell(c.accountMasked || '-'),
-        escapeCsvCell(new Date(c.createdAt).toLocaleString('pt-BR')),
+        escapeCsvCell(new Date(c.exchangedAt || c.createdAt).toLocaleString('pt-BR')),
       ];
     });
 
@@ -705,6 +879,25 @@ export function AdminPanel({
     );
   });
 
+  const filteredSolicitacoes = consultas
+    .filter((c) => c.status === 'troca_solicitada')
+    .filter((item) => {
+      if (reqStatusFilter !== 'todos' && item.redemptionStatus !== reqStatusFilter) return false;
+      if (reqDateFilter) {
+        const refDate = (item.exchangedAt || item.createdAt).slice(0, 10);
+        if (refDate !== reqDateFilter) return false;
+      }
+      if (!reqSearch.trim()) return true;
+      const q = reqSearch.toLowerCase().trim();
+      const digitsOnly = q.replace(/\D/g, '');
+      return (
+        item.profileLabel.toLowerCase().includes(q) ||
+        (item.cpfMasked || '').toLowerCase().includes(q) ||
+        (digitsOnly.length >= 2 && (item.cpfMasked || '').replace(/\D/g, '').includes(digitsOnly)) ||
+        item.protocol.toLowerCase().includes(q)
+      );
+    });
+
   const totalConsultas = consultas.length;
   const totalTrocas = consultas.filter((c) => c.status === 'troca_solicitada').length;
   const totalPontos = consultas.reduce((acc, item) => acc + item.pointsAvailable, 0);
@@ -712,7 +905,8 @@ export function AdminPanel({
   const tabTitles: Record<AdminTab, string> = {
     marca: 'Identidade e Logo',
     resgate: 'Personalização da Página de Resgate',
-    consultas: 'Consultas e Resgates',
+    solicitacoes: 'Solicitações de Resgate',
+    consultas: 'Consultas de Pontos',
     seguranca: 'Segurança e Senha',
   };
 
@@ -756,6 +950,19 @@ export function AdminPanel({
           >
             <LayoutTemplate className="w-4 h-4 shrink-0" aria-hidden="true" />
             <span>Página de Resgate</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('solicitacoes')}
+            className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'solicitacoes'
+                ? 'bg-[#151515] text-white'
+                : 'text-neutral-600 hover:bg-neutral-100 hover:text-[#151515]'
+            }`}
+          >
+            <ClipboardCheck className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <span>Solicitações de Resgate</span>
           </button>
 
           <button
@@ -1185,6 +1392,42 @@ export function AdminPanel({
                       {confirmButtonText.trim() || 'CONFIRMAR RESGATE'}
                     </div>
                   </div>
+
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="bg-white/95 rounded-lg border border-black/10 p-3 text-xs space-y-1">
+                      <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-[#0038A8]">
+                        Prévia: Carregamento
+                      </span>
+                      <p className="font-display font-bold text-[#151515]">
+                        {loadingTitle.trim() || 'CONECTANDO...'}
+                      </p>
+                      <p className="text-[11px] text-neutral-600 line-clamp-2">
+                        {loadingSubtitle.trim() || 'Carregando seus dados cadastrais. Aguarde...'}
+                      </p>
+                    </div>
+                    <div className="bg-white/95 rounded-lg border border-black/10 p-3 text-xs space-y-1">
+                      <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-[#0038A8]">
+                        Prévia: Verificação Facial
+                      </span>
+                      <p className="font-display font-bold text-[#151515]">
+                        {facialTitle.trim() || 'VERIFICAÇÃO DE IDENTIDADE'}
+                      </p>
+                      <p className="text-[11px] text-neutral-600 line-clamp-2">
+                        {facialInstructions.trim() || 'Posicione seu rosto dentro da área indicada para realizar a verificação.'}
+                      </p>
+                    </div>
+                    <div className="bg-white/95 rounded-lg border border-black/10 p-3 text-xs space-y-1">
+                      <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                        Prévia: Tela Final
+                      </span>
+                      <p className="font-display font-bold text-[#151515]">
+                        {finalTitle.trim() || 'SOLICITAÇÃO DE RESGATE RECEBIDA!'}
+                      </p>
+                      <p className="text-[11px] text-neutral-600 line-clamp-2">
+                        {finalSubtitle.trim() || 'Seus dados foram enviados com sucesso. Acompanhe o processamento do seu resgate.'}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </section>
 
@@ -1450,9 +1693,114 @@ export function AdminPanel({
 
                   <div className="pt-2 border-t border-neutral-200">
                     <p className="text-sm font-semibold text-[#151515] mb-3">
+                      Mensagens do carregamento, verificação facial e página final
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label htmlFor="rp-loadingTitle" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Título da tela de carregamento
+                        </label>
+                        <input
+                          id="rp-loadingTitle"
+                          type="text"
+                          required
+                          maxLength={60}
+                          value={loadingTitle}
+                          onChange={(e) => setLoadingTitle(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-loadingSubtitle" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Subtítulo do carregamento
+                        </label>
+                        <input
+                          id="rp-loadingSubtitle"
+                          type="text"
+                          required
+                          maxLength={160}
+                          value={loadingSubtitle}
+                          onChange={(e) => setLoadingSubtitle(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-facialTitle" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Título da verificação facial
+                        </label>
+                        <input
+                          id="rp-facialTitle"
+                          type="text"
+                          required
+                          maxLength={80}
+                          value={facialTitle}
+                          onChange={(e) => setFacialTitle(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-facialInstructions" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Instruções da verificação facial
+                        </label>
+                        <input
+                          id="rp-facialInstructions"
+                          type="text"
+                          required
+                          maxLength={220}
+                          value={facialInstructions}
+                          onChange={(e) => setFacialInstructions(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-finalTitle" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Título da tela final
+                        </label>
+                        <input
+                          id="rp-finalTitle"
+                          type="text"
+                          required
+                          maxLength={100}
+                          value={finalTitle}
+                          onChange={(e) => setFinalTitle(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-finalSubtitle" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Subtítulo da tela final
+                        </label>
+                        <input
+                          id="rp-finalSubtitle"
+                          type="text"
+                          required
+                          maxLength={220}
+                          value={finalSubtitle}
+                          onChange={(e) => setFinalSubtitle(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label htmlFor="rp-finalInfoText" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Texto informativo da página final
+                        </label>
+                        <textarea
+                          id="rp-finalInfoText"
+                          rows={2}
+                          maxLength={360}
+                          value={finalInfoText}
+                          onChange={(e) => setFinalInfoText(e.target.value)}
+                          className="w-full p-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-neutral-200">
+                    <p className="text-sm font-semibold text-[#151515] mb-3">
                       Rótulos dos botões de ação
                     </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                       <div>
                         <label htmlFor="rp-btn-convert" className="block text-xs font-medium text-neutral-600 mb-1">
                           Botão na tela de resultado
@@ -1497,7 +1845,7 @@ export function AdminPanel({
                       </div>
                       <div>
                         <label htmlFor="rp-btn-confirm" className="block text-xs font-medium text-neutral-600 mb-1">
-                          Botão final na página de resgate
+                          Botão na página amarela
                         </label>
                         <input
                           id="rp-btn-confirm"
@@ -1506,6 +1854,34 @@ export function AdminPanel({
                           maxLength={60}
                           value={confirmButtonText}
                           onChange={(e) => setConfirmButtonText(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-btn-facial" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Botão de verificação facial
+                        </label>
+                        <input
+                          id="rp-btn-facial"
+                          type="text"
+                          required
+                          maxLength={60}
+                          value={facialButtonText}
+                          onChange={(e) => setFacialButtonText(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-btn-auth" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Botão da confirmação segura
+                        </label>
+                        <input
+                          id="rp-btn-auth"
+                          type="text"
+                          required
+                          maxLength={60}
+                          value={authButtonText}
+                          onChange={(e) => setAuthButtonText(e.target.value)}
                           className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
                         />
                       </div>
@@ -1551,6 +1927,339 @@ export function AdminPanel({
                   </div>
                 </form>
               </section>
+            </div>
+          )}
+
+          {/* TAB: SOLICITAÇÕES DE RESGATE */}
+          {activeTab === 'solicitacoes' && (
+            <div className="space-y-6">
+              <div className="bg-white border border-neutral-200 rounded-xl p-6">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
+                  <div>
+                    <h2 className="font-display text-lg font-bold text-[#151515]">
+                      SOLICITAÇÕES DE RESGATE
+                    </h2>
+                    <p className="text-xs sm:text-sm text-neutral-600">
+                      Dados completos para depósito ficam criptografados e exigem acesso autorizado com registro de auditoria. Senhas de 8/4 dígitos e imagens faciais nunca são armazenadas ou exibidas.
+                    </p>
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-800 shrink-0">
+                    <ShieldCheck className="w-4 h-4" aria-hidden="true" />
+                    <span>Acesso auditado ativo</span>
+                  </div>
+                </div>
+
+                {/* Filtros: Cliente, CPF, Protocolo, Data e Status */}
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-3 mb-5">
+                  <div className="md:col-span-5 relative">
+                    <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true" />
+                    <input
+                      type="text"
+                      value={reqSearch}
+                      onChange={(e) => setReqSearch(e.target.value)}
+                      placeholder="Filtrar por cliente, CPF ou protocolo..."
+                      className="w-full h-10 pl-9 pr-3 rounded-lg border border-neutral-300 text-sm focus:outline-none focus:border-[#FE0A8C]"
+                    />
+                  </div>
+                  <div className="md:col-span-3">
+                    <input
+                      type="date"
+                      aria-label="Filtrar por data"
+                      value={reqDateFilter}
+                      onChange={(e) => setReqDateFilter(e.target.value)}
+                      className="w-full h-10 px-3 rounded-lg border border-neutral-300 text-sm focus:outline-none focus:border-[#FE0A8C]"
+                    />
+                  </div>
+                  <div className="md:col-span-4">
+                    <select
+                      aria-label="Filtrar por status do resgate"
+                      value={reqStatusFilter}
+                      onChange={(e) =>
+                        setReqStatusFilter(e.target.value as 'todos' | RedemptionAdminStatus)
+                      }
+                      className="w-full h-10 px-3 rounded-lg border border-neutral-300 text-sm bg-white focus:outline-none focus:border-[#FE0A8C]"
+                    >
+                      <option value="todos">Todos os status</option>
+                      {REDEMPTION_STATUS_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {reqFeedback && (
+                  <div
+                    role="status"
+                    className={`mb-4 p-3 rounded-lg border text-xs sm:text-sm flex items-center gap-2 ${
+                      reqFeedback.type === 'ok'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                        : 'bg-red-50 border-red-200 text-red-800'
+                    }`}
+                  >
+                    {reqFeedback.type === 'ok' ? (
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>{reqFeedback.text}</span>
+                  </div>
+                )}
+
+                {loadingConsultas ? (
+                  <div className="p-8 text-center text-sm text-neutral-500">
+                    Carregando solicitações de resgate...
+                  </div>
+                ) : filteredSolicitacoes.length === 0 ? (
+                  <div className="p-10 text-center border border-dashed border-neutral-200 rounded-xl">
+                    <p className="text-sm font-medium text-[#151515] mb-1">
+                      Nenhuma solicitação de resgate encontrada
+                    </p>
+                    <p className="text-xs text-neutral-500">
+                      Quando um participante concluir o envio dos dados bancários, o pedido aparecerá aqui para análise e processamento.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {filteredSolicitacoes.map((row) => {
+                      const revealed = revealedMap[row.id];
+                      const draft = statusDrafts[row.id] ?? {
+                        status: row.redemptionStatus,
+                        guaranteed24h: row.guaranteed24h,
+                        note: '',
+                      };
+                      const historyOpen = expandedHistoryId === row.id;
+
+                      return (
+                        <article
+                          key={row.id}
+                          className="border border-neutral-200 rounded-xl p-5 bg-neutral-50/40 space-y-4"
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3 pb-3 border-b border-neutral-200">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-[#151515] text-white">
+                                  {row.protocol}
+                                </span>
+                                <span className="font-display text-base font-bold text-[#151515]">
+                                  {row.profileLabel}
+                                </span>
+                              </div>
+                              <p className="text-xs text-neutral-500 mt-1">
+                                Solicitado em {new Date(row.exchangedAt || row.createdAt).toLocaleString('pt-BR')}
+                              </p>
+                            </div>
+
+                            <div className="text-right">
+                              <p className="font-display text-lg font-bold text-[#C8006B] tabular-nums">
+                                {formatBrl(row.amountBrl || CAMPAIGN_BRL_VALUE)}
+                              </p>
+                              <p className="text-xs font-mono text-neutral-600 tabular-nums">
+                                {row.pointsAvailable.toLocaleString('pt-BR')} pontos
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Dados Cadastrais & Bancários (Protegidos) */}
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                            <div className="bg-white border border-neutral-200 rounded-lg p-3.5 space-y-1">
+                              <p className="text-neutral-500 font-medium">Titular / CPF / Telefone</p>
+                              <p className="font-semibold text-[#151515]">{row.profileLabel}</p>
+                              <p className="font-mono text-neutral-700">
+                                CPF: {revealed ? revealed.cpf : row.cpfMasked}
+                              </p>
+                              <p className="font-mono text-neutral-700">
+                                Tel: {revealed ? revealed.phone : row.phoneMasked}
+                              </p>
+                            </div>
+
+                            <div className="bg-white border border-neutral-200 rounded-lg p-3.5 space-y-1">
+                              <p className="text-neutral-500 font-medium">Dados Bancários para Depósito</p>
+                              <p className="font-semibold text-[#151515]">
+                                {revealed ? revealed.bankLabel : row.bankLabel || 'Banco do Brasil — 001'}
+                              </p>
+                              <p className="font-mono text-neutral-700">
+                                Agência:{' '}
+                                {revealed
+                                  ? `${revealed.agency}${revealed.agencyDigit ? `-${revealed.agencyDigit}` : ''}`
+                                  : row.agencyMasked || '-'}
+                              </p>
+                              <p className="font-mono text-neutral-700">
+                                Conta:{' '}
+                                {revealed
+                                  ? `${revealed.accountNumber}${revealed.accountDigit ? `-${revealed.accountDigit}` : ''}`
+                                  : row.accountMasked || '-'}
+                              </p>
+                            </div>
+
+                            <div className="bg-white border border-neutral-200 rounded-lg p-3.5 space-y-1.5">
+                              <p className="text-neutral-500 font-medium">Verificações de Segurança</p>
+                              <p>
+                                Facial:{' '}
+                                <span
+                                  className={`font-semibold ${
+                                    row.faceVerificationStatus === 'verificada'
+                                      ? 'text-emerald-700'
+                                      : row.faceVerificationStatus === 'falha'
+                                        ? 'text-red-700'
+                                        : 'text-amber-700'
+                                  }`}
+                                >
+                                  {FACE_STATUS_LABELS[row.faceVerificationStatus]}
+                                </span>
+                              </p>
+                              <p>
+                                Plataforma:{' '}
+                                <span
+                                  className={`font-semibold ${
+                                    row.platformAuthStatus === 'autenticado'
+                                      ? 'text-emerald-700'
+                                      : row.platformAuthStatus === 'bloqueado'
+                                        ? 'text-red-700'
+                                        : 'text-neutral-700'
+                                  }`}
+                                >
+                                  {AUTH_STATUS_LABELS[row.platformAuthStatus]}
+                                </span>
+                              </p>
+                              <p className="text-[11px] text-neutral-500">
+                                Situação: <strong className="text-[#151515]">{REDEMPTION_STATUS_OPTIONS.find((o) => o.value === row.redemptionStatus)?.label}</strong>
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Botão de Acesso Protegido + Atualização de Status */}
+                          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 pt-2 border-t border-neutral-200">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={revealingId === row.id}
+                                onClick={() => void handleRevealDepositDetails(row.id)}
+                                className="h-9 px-3.5 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-100 text-xs font-semibold text-[#151515] inline-flex items-center gap-1.5 cursor-pointer"
+                              >
+                                {revealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                <span>
+                                  {revealingId === row.id
+                                    ? 'Descriptografando...'
+                                    : revealed
+                                      ? 'Ocultar dados completos'
+                                      : 'Acessar dados completos (auditado)'}
+                                </span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedHistoryId((prev) => (prev === row.id ? null : row.id))
+                                }
+                                className="h-9 px-3.5 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-100 text-xs font-medium text-neutral-700 inline-flex items-center gap-1.5 cursor-pointer"
+                              >
+                                <Clock className="w-3.5 h-3.5" />
+                                <span>Histórico ({row.auditHistory?.length || 0})</span>
+                              </button>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              <select
+                                aria-label={`Status do pedido ${row.protocol}`}
+                                value={draft.status}
+                                onChange={(e) =>
+                                  setStatusDrafts((prev) => ({
+                                    ...prev,
+                                    [row.id]: {
+                                      ...draft,
+                                      status: e.target.value as RedemptionAdminStatus,
+                                    },
+                                  }))
+                                }
+                                className="h-9 px-2.5 rounded-lg border border-neutral-300 bg-white text-xs text-[#151515]"
+                              >
+                                {REDEMPTION_STATUS_OPTIONS.map((opt) => (
+                                  <option key={opt.value} value={opt.value}>
+                                    {opt.label}
+                                  </option>
+                                ))}
+                              </select>
+
+                              {draft.status === 'resgate_aprovado' && (
+                                <label className="inline-flex items-center gap-1.5 text-xs text-neutral-700 px-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={draft.guaranteed24h}
+                                    onChange={(e) =>
+                                      setStatusDrafts((prev) => ({
+                                        ...prev,
+                                        [row.id]: { ...draft, guaranteed24h: e.target.checked },
+                                      }))
+                                    }
+                                    className="w-3.5 h-3.5 accent-[#151515]"
+                                  />
+                                  <span>Garantir até 24h</span>
+                                </label>
+                              )}
+
+                              <input
+                                type="text"
+                                value={draft.note}
+                                onChange={(e) =>
+                                  setStatusDrafts((prev) => ({
+                                    ...prev,
+                                    [row.id]: { ...draft, note: e.target.value },
+                                  }))
+                                }
+                                placeholder="Observação (opcional)"
+                                maxLength={120}
+                                className="h-9 px-2.5 rounded-lg border border-neutral-300 bg-white text-xs w-44"
+                              />
+
+                              <button
+                                type="button"
+                                disabled={updatingStatusId === row.id}
+                                onClick={() => void handleUpdateRedemptionStatus(row)}
+                                className="h-9 px-3.5 rounded-lg bg-[#FE0A8C] hover:bg-[#DF067A] disabled:bg-[#FE0A8C]/60 text-white text-xs font-bold cursor-pointer"
+                              >
+                                {updatingStatusId === row.id ? 'Salvando...' : 'Atualizar status'}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Histórico de alterações */}
+                          {historyOpen && (
+                            <div className="bg-white border border-neutral-200 rounded-lg p-3.5 space-y-2">
+                              <p className="text-xs font-semibold text-[#151515]">
+                                Histórico de alterações e acessos
+                              </p>
+                              {(!row.auditHistory || row.auditHistory.length === 0) ? (
+                                <p className="text-xs text-neutral-500">Sem eventos registrados.</p>
+                              ) : (
+                                <ul className="space-y-1.5 text-xs">
+                                  {row.auditHistory.map((ev) => (
+                                    <li
+                                      key={ev.id}
+                                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-neutral-100 pb-1.5 last:border-b-0 last:pb-0"
+                                    >
+                                      <div>
+                                        <span className="font-semibold text-[#151515]">{ev.action}</span>
+                                        {ev.details && (
+                                          <span className="text-neutral-600"> — {ev.details}</span>
+                                        )}
+                                      </div>
+                                      <span className="font-mono text-[11px] text-neutral-400 shrink-0">
+                                        {new Date(ev.at).toLocaleString('pt-BR')} · {ev.actor}
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

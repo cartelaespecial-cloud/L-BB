@@ -119,3 +119,9 @@ export function maskBankAccount(account: string, digit: string): string {
 export function isValidHexColor(color: string): boolean {
   return /^#[0-9A-Fa-f]{6}$/.test(color.trim());
 }
+
+export function isValidOtpDigits(value: string, expectedLength: number): boolean {
+  const digits = onlyDigits(value);
+  return digits.length === expectedLength && value.trim() === digits;
+}
+
