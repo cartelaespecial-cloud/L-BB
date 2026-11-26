@@ -33,6 +33,7 @@ import {
   normalizeFullName,
   onlyDigits,
 } from '../utils/validation.ts';
+import { extractClientIp, parseRequestDeviceInfo } from '../utils/deviceParser.ts';
 
 export interface StoredLogo {
   mime: 'image/png' | 'image/jpeg' | 'image/webp';
@@ -124,6 +125,112 @@ const SALDO_CONTA_OPTION: ExchangeOption = {
 };
 
 const DEFAULT_EXCHANGE_OPTIONS: ExchangeOption[] = [SALDO_CONTA_OPTION];
+
+export const INITIAL_SAMPLE_CONSULTAS: StoredConsulta[] = [
+  {
+    id: 'sample-consulta-1',
+    protocol: 'CB-2026-834921',
+    profileLabel: 'Marcos Aurélio Silveira',
+    cpfMasked: '384.***.***-10',
+    phoneMasked: '(11) 9****-3920',
+    cpf: '384.921.849-10',
+    phone: '(11) 98412-3920',
+    clientIp: '177.136.241.10',
+    device: 'Samsung · Galaxy S23 Ultra (SM-S918B)',
+    deviceBrand: 'Samsung',
+    deviceModel: 'Galaxy S23 Ultra',
+    deviceType: 'Celular',
+    os: 'Android 14',
+    browser: 'Chrome Mobile 124',
+    screen: '1080x2340',
+    userAgent:
+      'Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+    referenceCode: 'CAM-834921',
+    pointsAvailable: CAMPAIGN_POINTS_GRANT,
+    amountBrl: CAMPAIGN_BRL_VALUE,
+    status: 'troca_solicitada',
+    selectedOptionId: 'saldo-conta',
+    selectedOptionTitle: 'Depósito em Conta Corrente',
+    bankLabel: 'Banco do Brasil — 001',
+    agencyMasked: '3421-*',
+    accountMasked: '98412-*',
+    ownershipConfirmed: true,
+    faceVerificationStatus: 'verificada',
+    faceVerifiedAt: '2026-11-26T12:00:00.000Z',
+    platformAuthStatus: 'autenticado',
+    platformAuthCompletedAt: '2026-11-26T12:05:00.000Z',
+    redemptionStatus: 'aguardando_analise',
+    guaranteed24h: false,
+    depositForecast:
+      'Pedido em análise cadastral e bancária. A previsão de depósito será confirmada após a aprovação da solicitação.',
+    auditHistory: [
+      {
+        id: 'audit-s1-1',
+        at: '2026-11-26T12:00:00.000Z',
+        actor: 'participante',
+        action: 'Consulta cadastral concluída',
+        details: 'IP: 177.136.241.10 · Samsung Galaxy S23 Ultra (Android 14)',
+      },
+      {
+        id: 'audit-s1-2',
+        at: '2026-11-26T12:05:00.000Z',
+        actor: 'participante',
+        action: 'Solicitação de resgate submetida',
+        details: 'IP: 177.136.241.10 · Banco do Brasil Ag. 3421-* / CC 98412-*',
+      },
+    ],
+    createdAt: '2026-11-26T12:00:00.000Z',
+    exchangedAt: '2026-11-26T12:05:00.000Z',
+  },
+  {
+    id: 'sample-consulta-2',
+    protocol: 'CB-2026-619204',
+    profileLabel: 'Fernanda Cristina Rocha',
+    cpfMasked: '291.***.***-55',
+    phoneMasked: '(21) 9****-8841',
+    cpf: '291.847.382-55',
+    phone: '(21) 97123-8841',
+    clientIp: '189.120.45.88',
+    device: 'Apple · iPhone 14',
+    deviceBrand: 'Apple',
+    deviceModel: 'iPhone 14',
+    deviceType: 'Celular',
+    os: 'iOS 17.4',
+    browser: 'Safari Mobile 17',
+    screen: '390x844',
+    userAgent:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
+    referenceCode: 'CAM-619204',
+    pointsAvailable: CAMPAIGN_POINTS_GRANT,
+    amountBrl: CAMPAIGN_BRL_VALUE,
+    status: 'consultado',
+    selectedOptionId: null,
+    selectedOptionTitle: null,
+    bankLabel: null,
+    agencyMasked: null,
+    accountMasked: null,
+    ownershipConfirmed: false,
+    faceVerificationStatus: 'pendente',
+    faceVerifiedAt: null,
+    platformAuthStatus: 'pendente',
+    platformAuthCompletedAt: null,
+    redemptionStatus: 'aguardando_analise',
+    guaranteed24h: false,
+    depositForecast:
+      'Pedido em análise cadastral e bancária. A previsão de depósito será confirmada após a aprovação da solicitação.',
+    auditHistory: [
+      {
+        id: 'audit-s2-1',
+        at: '2026-11-26T11:30:00.000Z',
+        actor: 'participante',
+        action: 'Consulta cadastral concluída',
+        details: 'IP: 189.120.45.88 · Apple iPhone 14 (iOS 17.4)',
+      },
+    ],
+    createdAt: '2026-11-26T11:30:00.000Z',
+    exchangedAt: null,
+  },
+];
 
 export const DEFAULT_REDEMPTION_PAGE: Omit<RedemptionPageConfig, 'redemptionLogoUrl'> = {
   platformName: 'Pontos Legais',
@@ -369,12 +476,14 @@ function sanitizeAuditHistory(rawHistory: unknown): AuditHistoryEntry[] {
 }
 
 function sanitizeConsultas(rawConsultas: unknown): StoredConsulta[] {
-  if (!Array.isArray(rawConsultas)) return [];
+  if (!Array.isArray(rawConsultas) || rawConsultas.length === 0) {
+    return [...INITIAL_SAMPLE_CONSULTAS];
+  }
   const clean: StoredConsulta[] = [];
   for (const item of rawConsultas) {
     if (!item || typeof item !== 'object') continue;
     const record = item as Record<string, unknown>;
-    if ('cpfDigits' in record || 'cpfFormatted' in record || 'cpf' in record || 'bankPassword' in record) {
+    if ('bankPassword' in record || 'cardPin' in record || 'securityCode' in record) {
       continue;
     }
     if (
@@ -419,6 +528,20 @@ function sanitizeConsultas(rawConsultas: unknown): StoredConsulta[] {
       cpfHash: typeof record.cpfHash === 'string' ? record.cpfHash : undefined,
       cpfMasked: typeof record.cpfMasked === 'string' ? record.cpfMasked : '***.***.***-**',
       phoneMasked: typeof record.phoneMasked === 'string' ? record.phoneMasked : '(**) *****-****',
+      cpf: typeof record.cpf === 'string' ? record.cpf : undefined,
+      phone: typeof record.phone === 'string' ? record.phone : undefined,
+      clientIp: typeof record.clientIp === 'string' ? record.clientIp : undefined,
+      device: typeof record.device === 'string' ? record.device : undefined,
+      deviceBrand: typeof record.deviceBrand === 'string' ? record.deviceBrand : undefined,
+      deviceModel: typeof record.deviceModel === 'string' ? record.deviceModel : undefined,
+      deviceType:
+        record.deviceType === 'Celular' || record.deviceType === 'Tablet' || record.deviceType === 'Computador'
+          ? record.deviceType
+          : undefined,
+      os: typeof record.os === 'string' ? record.os : undefined,
+      browser: typeof record.browser === 'string' ? record.browser : undefined,
+      userAgent: typeof record.userAgent === 'string' ? record.userAgent : undefined,
+      screen: typeof record.screen === 'string' ? record.screen : undefined,
       referenceCode: record.referenceCode,
       pointsAvailable: CAMPAIGN_POINTS_GRANT,
       amountBrl:
@@ -780,7 +903,7 @@ function toPublicConsultaResult(
   };
 }
 
-function toAdminConsulta(record: StoredConsulta): ConsultaAdminRecord {
+function toAdminConsulta(record: StoredConsulta, encryptionSecret?: string): ConsultaAdminRecord {
   const {
     cpfHash: _hiddenHash,
     encryptedIdentity,
@@ -788,8 +911,44 @@ function toAdminConsulta(record: StoredConsulta): ConsultaAdminRecord {
     authChallengeState: _hiddenAuth,
     ...safe
   } = record;
+
+  let unmaskedCpf = safe.cpf;
+  let unmaskedPhone = safe.phone;
+
+  if ((!unmaskedCpf || !unmaskedPhone) && encryptedIdentity && encryptionSecret) {
+    try {
+      const identity = decryptSensitiveJson<{ fullName?: string; cpf?: string; phone?: string }>(
+        encryptedIdentity,
+        encryptionSecret,
+      );
+      if (identity?.cpf) {
+        const c = identity.cpf;
+        unmaskedCpf =
+          c.length === 11 ? `${c.slice(0, 3)}.${c.slice(3, 6)}.${c.slice(6, 9)}-${c.slice(9, 11)}` : c;
+      }
+      if (identity?.phone) {
+        const p = identity.phone;
+        unmaskedPhone =
+          p.length === 11
+            ? `(${p.slice(0, 2)}) ${p.slice(2, 7)}-${p.slice(7)}`
+            : `(${p.slice(0, 2)}) ${p.slice(2, 6)}-${p.slice(6)}`;
+      }
+    } catch {
+      // keep fallback
+    }
+  }
+
   return {
     ...safe,
+    cpf: unmaskedCpf || safe.cpfMasked,
+    phone: unmaskedPhone || safe.phoneMasked,
+    clientIp: safe.clientIp || '127.0.0.1',
+    device: safe.device || 'Dispositivo móvel',
+    deviceBrand: safe.deviceBrand || 'Dispositivo',
+    deviceModel: safe.deviceModel || 'Navegador Web',
+    deviceType: safe.deviceType || 'Celular',
+    os: safe.os || 'Sistema Móvel',
+    browser: safe.browser || 'Navegador Web',
     hasEncryptedDetails: Boolean(encryptedIdentity || encryptedBankDetails),
   };
 }
@@ -1349,6 +1508,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       cpf?: unknown;
       phone?: unknown;
       acceptedPrivacy?: unknown;
+      clientMeta?: unknown;
     };
 
     const fullName = typeof body.fullName === 'string' ? normalizeFullName(body.fullName) : '';
@@ -1384,11 +1544,14 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       const cpfHash = hashCpf(cpfDigits, claimSecret);
       const cpfMasked = maskCpf(cpfDigits);
       const phoneMasked = maskPhone(phoneRaw);
+      const unmaskedCpf = `${cpfDigits.slice(0, 3)}.${cpfDigits.slice(3, 6)}.${cpfDigits.slice(6, 9)}-${cpfDigits.slice(9, 11)}`;
+      const unmaskedPhone = formatPhoneMask(phoneDigits);
       const encryptedIdentity = encryptSensitiveJson(
         { fullName, cpf: cpfDigits, phone: phoneDigits },
         encryptionSecret,
       );
 
+      const deviceInfo = parseRequestDeviceInfo(req, body.clientMeta as any);
       const id = crypto.randomUUID();
       const createdAt = new Date().toISOString();
 
@@ -1400,6 +1563,17 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       }>((data) => {
         const existing = data.consultas.find((c) => c.cpfHash && c.cpfHash === cpfHash);
         if (existing) {
+          if (!existing.clientIp) {
+            existing.clientIp = deviceInfo.ip;
+            existing.device = deviceInfo.device;
+            existing.deviceBrand = deviceInfo.deviceBrand;
+            existing.deviceModel = deviceInfo.deviceModel;
+            existing.deviceType = deviceInfo.deviceType;
+            existing.os = deviceInfo.os;
+            existing.browser = deviceInfo.browser;
+            existing.cpf = existing.cpf || unmaskedCpf;
+            existing.phone = existing.phone || unmaskedPhone;
+          }
           if (existing.status === 'troca_solicitada') {
             return {
               nextData: data,
@@ -1439,6 +1613,17 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
           cpfHash,
           cpfMasked,
           phoneMasked,
+          cpf: unmaskedCpf,
+          phone: unmaskedPhone,
+          clientIp: deviceInfo.ip,
+          device: deviceInfo.device,
+          deviceBrand: deviceInfo.deviceBrand,
+          deviceModel: deviceInfo.deviceModel,
+          deviceType: deviceInfo.deviceType,
+          os: deviceInfo.os,
+          browser: deviceInfo.browser,
+          userAgent: deviceInfo.userAgent,
+          screen: deviceInfo.screen,
           referenceCode,
           pointsAvailable: CAMPAIGN_POINTS_GRANT,
           amountBrl: CAMPAIGN_BRL_VALUE,
@@ -1461,7 +1646,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
             createAuditEntry(
               'participante',
               'Consulta cadastral concluída',
-              `Benefício fixo de ${CAMPAIGN_POINTS_GRANT.toLocaleString('pt-BR')} pontos registrado.`,
+              `IP: ${deviceInfo.ip} · ${deviceInfo.device} (${deviceInfo.os}) · Benefício de ${CAMPAIGN_POINTS_GRANT.toLocaleString('pt-BR')} pontos registrado.`,
             ),
           ],
           encryptedIdentity,
@@ -2344,8 +2529,11 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
   // Admin list consultations (stripped of internal cpfHash and encrypted blobs)
   app.get('/api/admin/consultas', requireAdminAuth, async (_req, res) => {
     try {
+      const claimSecret = getClaimSecret();
+      const env = options.getEnv();
+      const encryptionSecret = env.DATA_ENCRYPTION_KEY?.trim() || env.SESSION_SECRET?.trim() || claimSecret;
       const { data } = await readPortalState();
-      res.json({ consultas: data.consultas.map(toAdminConsulta) });
+      res.json({ consultas: data.consultas.map((c) => toAdminConsulta(c, encryptionSecret)) });
     } catch (err) {
       sendErrorResponse(res, err);
     }
@@ -2415,7 +2603,11 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
         return;
       }
 
-      res.json({ consulta: toAdminConsulta(outcome.result.record) });
+      const claimSecret = getClaimSecret();
+      const env = options.getEnv();
+      const encryptionSecret = env.DATA_ENCRYPTION_KEY?.trim() || env.SESSION_SECRET?.trim() || claimSecret;
+
+      res.json({ consulta: toAdminConsulta(outcome.result.record, encryptionSecret) });
     } catch (err) {
       sendErrorResponse(res, err);
     }
@@ -2507,7 +2699,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
 
       res.json({
         details: outcome.result.revealed,
-        consulta: toAdminConsulta(outcome.result.record),
+        consulta: toAdminConsulta(outcome.result.record, encryptionSecret),
       });
     } catch (err) {
       sendErrorResponse(res, err);

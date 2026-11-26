@@ -108,6 +108,17 @@ export interface ConsultaAdminRecord {
   cpfHash?: string;
   cpfMasked: string;
   phoneMasked: string;
+  cpf?: string;
+  phone?: string;
+  clientIp?: string;
+  device?: string;
+  deviceBrand?: string;
+  deviceModel?: string;
+  deviceType?: 'Celular' | 'Tablet' | 'Computador';
+  os?: string;
+  browser?: string;
+  userAgent?: string;
+  screen?: string;
   referenceCode: string;
   pointsAvailable: number;
   amountBrl: number;

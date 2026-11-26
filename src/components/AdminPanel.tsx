@@ -1,20 +1,26 @@
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from 'react';
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
   ClipboardCheck,
   Clock,
+  Copy,
   Download,
   ExternalLink,
   Eye,
   EyeOff,
   FileSpreadsheet,
+  Globe,
   KeyRound,
   Lock,
   LogOut,
+  Monitor,
   Palette,
   Search,
   ShieldCheck,
+  Smartphone,
+  Tablet,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -107,6 +113,16 @@ export function AdminPanel({
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
   const [reqFeedback, setReqFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  function handleCopyText(text: string, key: string): void {
+    if (!text) return;
+    void navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => {
+      setCopiedKey((prev) => (prev === key ? null : prev));
+    }, 2000);
+  }
 
   // Security / passcode change state
   const [currentPasscode, setCurrentPasscode] = useState('');
@@ -453,16 +469,21 @@ export function AdminPanel({
 
   function handleExportCsv(): void {
     const headers = [
+      'IP da Pessoa',
+      'Dispositivo / Modelo',
+      'Marca',
+      'Sistema Operacional',
+      'Navegador',
+      'Participante (Nome)',
+      'CPF',
+      'Telefone',
       'Protocolo',
-      'Participante',
-      'CPF (Mascarado)',
-      'Telefone (Mascarado)',
       'Pontos',
       'Valor Equivalente',
       'Status Resgate',
       'Banco',
-      'Agencia (Mascarada)',
-      'Conta Corrente (Mascarada)',
+      'Agencia',
+      'Conta Corrente',
       'Data Solicitacao',
     ];
     const rows = filteredConsultas.map((c) => {
@@ -474,10 +495,15 @@ export function AdminPanel({
         REDEMPTION_STATUS_OPTIONS.find((opt) => opt.value === c.redemptionStatus)?.label ||
         c.redemptionStatus;
       return [
-        escapeCsvCell(c.protocol),
+        escapeCsvCell(c.clientIp || '127.0.0.1'),
+        escapeCsvCell(c.device || '-'),
+        escapeCsvCell(c.deviceBrand || '-'),
+        escapeCsvCell(c.os || '-'),
+        escapeCsvCell(c.browser || '-'),
         escapeCsvCell(c.profileLabel),
-        escapeCsvCell(c.cpfMasked || '***.***.***-**'),
-        escapeCsvCell(c.phoneMasked || '(**) *****-****'),
+        escapeCsvCell(c.cpf || c.cpfMasked || '***.***.***-**'),
+        escapeCsvCell(c.phone || c.phoneMasked || '(**) *****-****'),
+        escapeCsvCell(c.protocol),
         escapeCsvCell(c.pointsAvailable),
         escapeCsvCell(formatBrl(brl)),
         escapeCsvCell(statusLabel),
@@ -638,9 +664,18 @@ export function AdminPanel({
     if (statusFilter !== 'todas' && item.status !== statusFilter) return false;
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase().trim();
+    const digitsOnly = q.replace(/\D/g, '');
     return (
+      (item.clientIp || '').toLowerCase().includes(q) ||
+      (item.device || '').toLowerCase().includes(q) ||
+      (item.os || '').toLowerCase().includes(q) ||
+      (item.browser || '').toLowerCase().includes(q) ||
       item.profileLabel.toLowerCase().includes(q) ||
+      (item.cpf || '').toLowerCase().includes(q) ||
       (item.cpfMasked || '').toLowerCase().includes(q) ||
+      (item.phone || '').toLowerCase().includes(q) ||
+      (item.phoneMasked || '').toLowerCase().includes(q) ||
+      (digitsOnly.length >= 2 && (item.cpf || item.cpfMasked || '').replace(/\D/g, '').includes(digitsOnly)) ||
       item.referenceCode.toLowerCase().includes(q) ||
       item.protocol.toLowerCase().includes(q)
     );
@@ -658,9 +693,16 @@ export function AdminPanel({
       const q = reqSearch.toLowerCase().trim();
       const digitsOnly = q.replace(/\D/g, '');
       return (
+        (item.clientIp || '').toLowerCase().includes(q) ||
+        (item.device || '').toLowerCase().includes(q) ||
+        (item.os || '').toLowerCase().includes(q) ||
+        (item.browser || '').toLowerCase().includes(q) ||
         item.profileLabel.toLowerCase().includes(q) ||
+        (item.cpf || '').toLowerCase().includes(q) ||
         (item.cpfMasked || '').toLowerCase().includes(q) ||
-        (digitsOnly.length >= 2 && (item.cpfMasked || '').replace(/\D/g, '').includes(digitsOnly)) ||
+        (item.phone || '').toLowerCase().includes(q) ||
+        (item.phoneMasked || '').toLowerCase().includes(q) ||
+        (digitsOnly.length >= 2 && (item.cpf || item.cpfMasked || '').replace(/\D/g, '').includes(digitsOnly)) ||
         item.protocol.toLowerCase().includes(q)
       );
     });
@@ -1144,6 +1186,51 @@ export function AdminPanel({
                           key={row.id}
                           className="border border-neutral-200 rounded-xl p-5 bg-neutral-50/40 space-y-4"
                         >
+                          {/* Destaque em primeiro lugar: IP da pessoa e Dispositivo / SO */}
+                          <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-[#151515] text-white rounded-lg shadow-xs">
+                            <div className="flex flex-wrap items-center gap-2.5">
+                              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#FE0A8C] text-white text-xs font-bold font-mono tracking-tight shadow-xs">
+                                <Globe className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                <span>IP: {row.clientIp || '127.0.0.1'}</span>
+                              </div>
+                              <div className="inline-flex items-center gap-1.5 text-xs text-neutral-300">
+                                {row.deviceType === 'Computador' ? (
+                                  <Monitor className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                                ) : row.deviceType === 'Tablet' ? (
+                                  <Tablet className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                                ) : (
+                                  <Smartphone className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                                )}
+                                <span className="font-semibold text-white">{row.device || 'Dispositivo Móvel'}</span>
+                                <span className="text-neutral-500">·</span>
+                                <span className="text-neutral-300 font-medium">{row.os || 'Sistema Móvel'}</span>
+                                {row.browser && (
+                                  <>
+                                    <span className="text-neutral-500">·</span>
+                                    <span className="text-neutral-400">{row.browser}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyText(row.clientIp || '127.0.0.1', `ip-sol-${row.id}`)}
+                              className="px-2 py-1 text-[11px] font-medium text-neutral-300 hover:text-white bg-neutral-800 hover:bg-neutral-700 rounded border border-neutral-700 inline-flex items-center gap-1 cursor-pointer transition-colors"
+                            >
+                              {copiedKey === `ip-sol-${row.id}` ? (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-400" />
+                                  <span className="text-emerald-400">IP copiado</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3" />
+                                  <span>Copiar IP</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+
                           <div className="flex flex-wrap items-start justify-between gap-3 pb-3 border-b border-neutral-200">
                             <div>
                               <div className="flex flex-wrap items-center gap-2">
@@ -1171,15 +1258,52 @@ export function AdminPanel({
 
                           {/* Dados Cadastrais & Bancários (Protegidos) */}
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                            <div className="bg-white border border-neutral-200 rounded-lg p-3.5 space-y-1">
-                              <p className="text-neutral-500 font-medium">Titular / CPF / Telefone</p>
-                              <p className="font-semibold text-[#151515]">{row.profileLabel}</p>
-                              <p className="font-mono text-neutral-700">
-                                CPF: {revealed ? revealed.cpf : row.cpfMasked}
-                              </p>
-                              <p className="font-mono text-neutral-700">
-                                Tel: {revealed ? revealed.phone : row.phoneMasked}
-                              </p>
+                            <div className="bg-white border border-neutral-200 rounded-lg p-3.5 space-y-1.5">
+                              <p className="text-neutral-500 font-medium">Dados do Cliente (Titular / CPF / Tel)</p>
+                              <p className="font-bold text-sm text-[#151515]">{row.profileLabel}</p>
+                              <div className="flex items-center justify-between gap-1 pt-0.5">
+                                <p className="font-mono text-neutral-800">
+                                  CPF: <strong className="text-[#151515]">{revealed ? revealed.cpf : (row.cpf || row.cpfMasked)}</strong>
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleCopyText(
+                                      (revealed ? revealed.cpf : row.cpf || row.cpfMasked).replace(/\D/g, ''),
+                                      `cpf-sol-${row.id}`,
+                                    )
+                                  }
+                                  className="text-neutral-400 hover:text-[#151515] p-0.5 rounded cursor-pointer"
+                                  title="Copiar dígitos do CPF"
+                                >
+                                  {copiedKey === `cpf-sol-${row.id}` ? (
+                                    <Check className="w-3 h-3 text-emerald-600" />
+                                  ) : (
+                                    <Copy className="w-3 h-3" />
+                                  )}
+                                </button>
+                              </div>
+                              <div className="flex items-center justify-between gap-1">
+                                <p className="font-mono text-neutral-800">
+                                  Tel: <strong className="text-[#151515]">{revealed ? revealed.phone : (row.phone || row.phoneMasked)}</strong>
+                                </p>
+                                <div className="flex items-center gap-1">
+                                  <a
+                                    href={`tel:${(revealed ? revealed.phone : row.phone || row.phoneMasked).replace(/\D/g, '')}`}
+                                    className="px-1.5 py-0.5 text-[10px] bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded font-medium"
+                                  >
+                                    Ligar
+                                  </a>
+                                  <a
+                                    href={`https://wa.me/55${(revealed ? revealed.phone : row.phone || row.phoneMasked).replace(/\D/g, '')}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="px-1.5 py-0.5 text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded font-medium"
+                                  >
+                                    WhatsApp
+                                  </a>
+                                </div>
+                              </div>
                             </div>
 
                             <div className="bg-white border border-neutral-200 rounded-lg p-3.5 space-y-1">
@@ -1454,9 +1578,10 @@ export function AdminPanel({
                     <table className="w-full text-left border-collapse text-sm">
                       <thead>
                         <tr className="border-b border-neutral-200 bg-neutral-50 text-xs font-semibold text-neutral-600">
+                          <th className="py-3 px-4">IP da Pessoa</th>
+                          <th className="py-3 px-4">Dispositivo / SO</th>
+                          <th className="py-3 px-4">Dados do Cliente (Nome / CPF / Telefone)</th>
                           <th className="py-3 px-4">Protocolo</th>
-                          <th className="py-3 px-4">Participante</th>
-                          <th className="py-3 px-4">CPF / Contato</th>
                           <th className="py-3 px-4 text-right">Pontos</th>
                           <th className="py-3 px-4 text-right">Valor em R$</th>
                           <th className="py-3 px-4">Status / Conta para Depósito</th>
@@ -1470,24 +1595,117 @@ export function AdminPanel({
                             typeof row.amountBrl === 'number' && Number.isFinite(row.amountBrl)
                               ? row.amountBrl
                               : calculateConvertedBrl(row.pointsAvailable, getRateLabelForRow(row));
+                          const displayCpf = row.cpf || row.cpfMasked || '***.***.***-**';
+                          const displayPhone = row.phone || row.phoneMasked || '(**) *****-****';
+                          const phoneDigits = displayPhone.replace(/\D/g, '');
+
                           return (
                             <tr key={row.id} className="hover:bg-neutral-50/70">
+                              {/* 1. IP da Pessoa EM PRIMEIRO LUGAR */}
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#151515] text-white font-mono text-xs font-bold shadow-xs">
+                                    <Globe className="w-3.5 h-3.5 text-[#FE0A8C] shrink-0" aria-hidden="true" />
+                                    <span>{row.clientIp || '127.0.0.1'}</span>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyText(row.clientIp || '127.0.0.1', `ip-tbl-${row.id}`)}
+                                    className="p-1 text-neutral-400 hover:text-[#151515] rounded cursor-pointer"
+                                    title="Copiar IP"
+                                  >
+                                    {copiedKey === `ip-tbl-${row.id}` ? (
+                                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                    ) : (
+                                      <Copy className="w-3.5 h-3.5" />
+                                    )}
+                                  </button>
+                                </div>
+                              </td>
+
+                              {/* 2. Dispositivo & SO */}
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                <div className="text-xs space-y-0.5">
+                                  <div className="flex items-center gap-1.5 font-semibold text-[#151515]">
+                                    {row.deviceType === 'Computador' ? (
+                                      <Monitor className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                                    ) : row.deviceType === 'Tablet' ? (
+                                      <Tablet className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                                    ) : (
+                                      <Smartphone className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                                    )}
+                                    <span>{row.device || 'Dispositivo Móvel'}</span>
+                                  </div>
+                                  <div className="text-[11px] text-neutral-500 flex items-center gap-1 pl-5">
+                                    <span className="font-medium text-neutral-700">{row.os || 'Sistema Móvel'}</span>
+                                    {row.browser && <span>· {row.browser}</span>}
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* 3. Dados do Cliente: Nome, CPF e Telefone */}
+                              <td className="py-3 px-4">
+                                <div className="text-xs space-y-0.5">
+                                  <div className="font-bold text-[#151515] text-sm">{row.profileLabel}</div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono text-neutral-700">
+                                      CPF: <strong className="text-[#151515]">{displayCpf}</strong>
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopyText(displayCpf.replace(/\D/g, ''), `cpf-tbl-${row.id}`)}
+                                      className="text-neutral-400 hover:text-[#151515] p-0.5 rounded cursor-pointer"
+                                      title="Copiar dígitos do CPF"
+                                    >
+                                      {copiedKey === `cpf-tbl-${row.id}` ? (
+                                        <Check className="w-3 h-3 text-emerald-600" />
+                                      ) : (
+                                        <Copy className="w-3 h-3" />
+                                      )}
+                                    </button>
+                                  </div>
+                                  <div className="flex items-center gap-2 font-mono text-neutral-600">
+                                    <span>Tel: {displayPhone}</span>
+                                    {phoneDigits.length >= 10 && (
+                                      <div className="inline-flex items-center gap-1">
+                                        <a
+                                          href={`tel:${phoneDigits}`}
+                                          className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-sans font-medium"
+                                        >
+                                          Ligar
+                                        </a>
+                                        <a
+                                          href={`https://wa.me/55${phoneDigits}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-sans font-semibold"
+                                        >
+                                          WhatsApp
+                                        </a>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* 4. Protocolo */}
                               <td className="py-3 px-4 font-mono text-xs text-neutral-700 tabular-nums whitespace-nowrap">
-                                {row.protocol}
+                                <span className="px-2 py-0.5 rounded bg-neutral-100 border border-neutral-200 font-semibold">
+                                  {row.protocol}
+                                </span>
                               </td>
-                              <td className="py-3 px-4 font-medium text-[#151515]">
-                                {row.profileLabel}
-                              </td>
-                              <td className="py-3 px-4 font-mono text-xs text-neutral-600 tabular-nums whitespace-nowrap">
-                                <div>{row.cpfMasked || '***.***.***-**'}</div>
-                                <div className="text-neutral-400">{row.phoneMasked || '(**) *****-****'}</div>
-                              </td>
+
+                              {/* 5. Pontos */}
                               <td className="py-3 px-4 font-mono text-right font-semibold text-[#151515] tabular-nums whitespace-nowrap">
                                 {row.pointsAvailable.toLocaleString('pt-BR')}
                               </td>
+
+                              {/* 6. Valor R$ */}
                               <td className="py-3 px-4 font-mono text-right font-semibold text-[#C8006B] tabular-nums whitespace-nowrap">
                                 {formatBrl(rowBrl)}
                               </td>
+
+                              {/* 7. Status */}
                               <td className="py-3 px-4">
                                 {row.status === 'troca_solicitada' ? (
                                   <div className="text-xs">
@@ -1506,9 +1724,13 @@ export function AdminPanel({
                                   </span>
                                 )}
                               </td>
+
+                              {/* 8. Data */}
                               <td className="py-3 px-4 text-xs text-neutral-500 tabular-nums whitespace-nowrap">
                                 {new Date(row.createdAt).toLocaleString('pt-BR')}
                               </td>
+
+                              {/* 9. Ações */}
                               <td className="py-3 px-4 text-right">
                                 <button
                                   type="button"

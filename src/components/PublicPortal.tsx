@@ -253,6 +253,12 @@ export function PublicPortal({
             cpf,
             phone,
             acceptedPrivacy: true,
+            clientMeta: {
+              screen: typeof window !== 'undefined' ? `${window.screen.width}x${window.screen.height}` : undefined,
+              platform: typeof navigator !== 'undefined' ? navigator.platform : undefined,
+              mobile: typeof navigator !== 'undefined' ? /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) : false,
+              touchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints : 0,
+            },
           }),
         }),
         minDelay,
