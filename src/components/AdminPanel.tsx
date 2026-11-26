@@ -180,8 +180,8 @@ export function AdminPanel({
           heroSubtitle: heroSubtitle.trim(),
           formHeading: formHeading.trim(),
           pointsLabel: pointsLabel.trim(),
-          minPointsPreview: Number(minPointsPreview) || 1250,
-          maxPointsPreview: Number(maxPointsPreview) || 4850,
+          minPointsPreview: Number(minPointsPreview) || 40000,
+          maxPointsPreview: Number(maxPointsPreview) || 80000,
         }),
       });
       if (response.status === 401) {

@@ -6,31 +6,19 @@ import type { SiteSettings } from './types';
 const FALLBACK_SETTINGS: SiteSettings = {
   brandName: 'Portal de Pontos',
   brandLogoUrl: null,
-  heroTitle: 'Vamos verificar se você tem pontos disponíveis',
+  heroTitle: 'Troque seus pontos disponíveis por reais',
   heroSubtitle:
-    'Consulte agora a quantidade de pontos disponíveis e descubra exatamente em quanto eles podem ser convertidos em reais.',
-  formHeading: 'Vamos trocar eles em pontos',
+    'Consulte na hora quantos pontos estão disponíveis e veja exatamente quanto eles valem em R$ para resgate.',
+  formHeading: 'Verificar pontos disponíveis',
   pointsLabel: 'pontos',
-  minPointsPreview: 1250,
-  maxPointsPreview: 4850,
+  minPointsPreview: 40000,
+  maxPointsPreview: 80000,
   exchangeOptions: [
     {
-      id: 'credito-fatura',
-      title: 'Crédito em Fatura ou Desconto',
-      description: 'Abatimento direto em compras e faturas participantes',
+      id: 'saldo-conta',
+      title: 'Resgate em Saldo em Conta',
+      description: 'Conversão direta dos pontos disponíveis em saldo em conta',
       rateLabel: '1.000 pts = R$ 50,00',
-    },
-    {
-      id: 'vale-compras',
-      title: 'Vale-Compras Digital',
-      description: 'Voucher para utilizar em lojas e parceiros credenciados',
-      rateLabel: '1.000 pts = R$ 45,00',
-    },
-    {
-      id: 'cashback-conta',
-      title: 'Transferência em Conta',
-      description: 'Conversão direta do saldo de pontos em crédito em reais',
-      rateLabel: '1.000 pts = R$ 40,00',
     },
   ],
 };

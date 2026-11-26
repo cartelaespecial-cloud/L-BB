@@ -69,36 +69,24 @@ const MAX_JSON_BODY_BYTES = 4 * 1024 * 1024; // 4 MB
 export const INITIAL_LOCAL_ADMIN_HASH =
   '87e92f2d559cdd2391a399986e34f778:65713ac0b6e9fbbf9cbde0fa08719ba48a21fe86cc0c06300bf9eabbbad8485ff8f798f0aa69ba366693465211a6144f2ba4cbf131181fde6734e00ef5208e10';
 
-const DEFAULT_EXCHANGE_OPTIONS: ExchangeOption[] = [
-  {
-    id: 'credito-fatura',
-    title: 'Crédito em Fatura ou Desconto',
-    description: 'Abatimento direto em compras e faturas participantes',
-    rateLabel: '1.000 pts = R$ 50,00',
-  },
-  {
-    id: 'vale-compras',
-    title: 'Vale-Compras Digital',
-    description: 'Voucher para utilizar em lojas e parceiros credenciados',
-    rateLabel: '1.000 pts = R$ 45,00',
-  },
-  {
-    id: 'cashback-conta',
-    title: 'Transferência em Conta',
-    description: 'Conversão direta do saldo de pontos em crédito em reais',
-    rateLabel: '1.000 pts = R$ 40,00',
-  },
-];
+const SALDO_CONTA_OPTION: ExchangeOption = {
+  id: 'saldo-conta',
+  title: 'Resgate em Saldo em Conta',
+  description: 'Conversão direta dos pontos disponíveis em saldo em conta',
+  rateLabel: '1.000 pts = R$ 50,00',
+};
+
+const DEFAULT_EXCHANGE_OPTIONS: ExchangeOption[] = [SALDO_CONTA_OPTION];
 
 const DEFAULT_CORE_SETTINGS: Omit<SiteSettings, 'brandLogoUrl' | 'passcodeManagedByEnv'> = {
   brandName: 'Portal de Pontos',
-  heroTitle: 'Vamos verificar se você tem pontos disponíveis',
+  heroTitle: 'Troque seus pontos disponíveis por reais',
   heroSubtitle:
-    'Consulte agora a quantidade de pontos disponíveis e descubra exatamente em quanto eles podem ser convertidos em reais.',
-  formHeading: 'Vamos trocar eles em pontos',
+    'Consulte na hora quantos pontos estão disponíveis e veja exatamente quanto eles valem em R$ para resgate.',
+  formHeading: 'Verificar pontos disponíveis',
   pointsLabel: 'pontos',
-  minPointsPreview: 1250,
-  maxPointsPreview: 4850,
+  minPointsPreview: 40000,
+  maxPointsPreview: 80000,
   exchangeOptions: DEFAULT_EXCHANGE_OPTIONS,
 };
 
@@ -930,7 +918,9 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
         errorMessage?: string;
         record?: StoredConsulta;
       }>((data) => {
-        const option = data.settings.exchangeOptions.find((opt) => opt.id === body.optionId);
+        const option =
+          data.settings.exchangeOptions.find((opt) => opt.id === body.optionId) ??
+          (body.optionId === SALDO_CONTA_OPTION.id ? SALDO_CONTA_OPTION : undefined);
         if (!option) {
           return {
             nextData: data,
