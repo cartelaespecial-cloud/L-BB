@@ -1254,7 +1254,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       }>((data) => {
         const existing = data.consultas.find((c) => c.cpfHash && c.cpfHash === cpfHash);
         if (existing) {
-          if (existing.status === 'troca_solicitada' && existing.platformAuthStatus === 'autenticado') {
+          if (existing.status === 'troca_solicitada') {
             return {
               nextData: data,
               result: {
@@ -1399,6 +1399,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       claimToken?: unknown;
       ownershipConfirmed?: unknown;
       acceptedTerms?: unknown;
+      bankLabel?: unknown;
       agency?: unknown;
       agencyDigit?: unknown;
       accountNumber?: unknown;
@@ -1416,6 +1417,10 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       return;
     }
 
+    const customBankLabel =
+      typeof body.bankLabel === 'string' && body.bankLabel.trim().length >= 2
+        ? body.bankLabel.trim().slice(0, 80)
+        : '';
     const agency = typeof body.agency === 'string' ? body.agency : '';
     const agencyDigit = typeof body.agencyDigit === 'string' ? body.agencyDigit : '';
     const accountNumber = typeof body.accountNumber === 'string' ? body.accountNumber : '';
@@ -1467,7 +1472,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
         }
 
         const existing = data.consultas[idx];
-        if (existing.status === 'troca_solicitada' && existing.platformAuthStatus === 'autenticado') {
+        if (existing.status === 'troca_solicitada') {
           return {
             nextData: data,
             result: {
@@ -1477,7 +1482,10 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
           };
         }
 
-        const bankLabel = data.settings.redemptionPage?.bankLabel || DEFAULT_REDEMPTION_PAGE.bankLabel;
+        const bankLabel =
+          customBankLabel ||
+          data.settings.redemptionPage?.bankLabel ||
+          DEFAULT_REDEMPTION_PAGE.bankLabel;
         const encryptedBankDetails = encryptSensitiveJson(
           {
             bankLabel,
@@ -1548,6 +1556,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       ovalCoverageOk?: unknown;
       framesAnalyzed?: unknown;
       failedReason?: unknown;
+      devPreviewSkip?: unknown;
     };
 
     if (typeof body.claimToken !== 'string' || typeof body.livenessChallenge !== 'string') {
@@ -1579,14 +1588,21 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
         return;
       }
 
+      const isNodeDevPreview =
+        options.runtime === 'node' &&
+        typeof process !== 'undefined' &&
+        process.env?.NODE_ENV !== 'production';
+      const usedDevPreviewSkip = isNodeDevPreview && body.devPreviewSkip === true;
+
       const frames = typeof body.framesAnalyzed === 'number' ? body.framesAnalyzed : 0;
       const failedReason = typeof body.failedReason === 'string' ? body.failedReason.trim().slice(0, 140) : '';
       const passedLiveness =
-        !failedReason &&
-        body.faceDetected === true &&
-        body.motionDetected === true &&
-        body.ovalCoverageOk === true &&
-        frames >= 5;
+        usedDevPreviewSkip ||
+        (!failedReason &&
+          body.faceDetected === true &&
+          body.motionDetected === true &&
+          body.ovalCoverageOk === true &&
+          frames >= 5);
 
       const stepACode = passedLiveness ? String(crypto.randomInt(10000000, 99999999)) : undefined;
       const stepAHash = stepACode ? hashStepCode(id, 'code8', stepACode, claimSecret) : undefined;
@@ -1634,8 +1650,12 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
                 ...(existing.auditHistory || []),
                 createAuditEntry(
                   'sistema',
-                  'Identidade verificada (prova de vida facial)',
-                  `Verificação concluída com ${frames} quadros analisados sem retenção de imagem.`,
+                  usedDevPreviewSkip
+                    ? 'Identidade simulada em modo de desenvolvimento (editor)'
+                    : 'Identidade verificada (prova de vida facial)',
+                  usedDevPreviewSkip
+                    ? 'Avanço simulado exclusivamente no preview de desenvolvimento.'
+                    : `Verificação concluída com ${frames} quadros analisados sem retenção de imagem.`,
                 ),
               ].slice(-40),
             }
