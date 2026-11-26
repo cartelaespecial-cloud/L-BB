@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
 import type { ConsultaAdminRecord, ExchangeOption, SiteSettings } from '../types.ts';
 
 export interface StoredLogo {
@@ -35,8 +35,10 @@ export interface RuntimeEnv {
 }
 
 export interface CreatePortalAppOptions {
+  app: Express;
   runtime: 'node' | 'cloudflare-worker';
   getEnv: () => RuntimeEnv;
+  jsonParser?: RequestHandler;
   localStore?: LocalStoreAdapter;
 }
 
@@ -60,6 +62,8 @@ class StorageBackendError extends Error {
     this.name = 'StorageBackendError';
   }
 }
+
+const MAX_JSON_BODY_BYTES = 4 * 1024 * 1024; // 4 MB
 
 // Initial scrypt hash used strictly in local Node development when ADMIN_PASSCODE is not configured
 export const INITIAL_LOCAL_ADMIN_HASH =
@@ -108,6 +112,112 @@ const FICTITIOUS_PROFILES = [
   'Patrícia Lima · Perfil Fictício',
   'Lucas Almeida · Perfil Fictício',
 ];
+
+function createUtf8JsonParser(limitBytes: number): RequestHandler {
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const method = req.method.toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+      next();
+      return;
+    }
+
+    if (req.body !== undefined) {
+      next();
+      return;
+    }
+
+    const contentLengthRaw = req.headers['content-length'];
+    if (typeof contentLengthRaw === 'string') {
+      const contentLength = Number(contentLengthRaw);
+      if (Number.isFinite(contentLength) && contentLength > limitBytes) {
+        res.status(413).json({ error: 'Corpo da requisição excede o limite de 4 MB.' });
+        return;
+      }
+    }
+
+    const contentType = String(req.headers['content-type'] || '').trim();
+    const isJsonContentType =
+      contentType === '' || /^application\/([a-z0-9.+-]+\+)?json(\s*;|$)/i.test(contentType);
+
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let settled = false;
+
+    const finishError = (status: number, message: string) => {
+      if (settled) return;
+      settled = true;
+      res.status(status).json({ error: message });
+    };
+
+    req.on('data', (chunk: unknown) => {
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk)
+        ? chunk
+        : typeof chunk === 'string'
+          ? Buffer.from(chunk, 'utf8')
+          : Buffer.from(chunk as Uint8Array);
+
+      totalBytes += buf.length;
+      if (totalBytes > limitBytes) {
+        finishError(413, 'Corpo da requisição excede o limite de 4 MB.');
+        return;
+      }
+      chunks.push(buf);
+    });
+
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+
+      if (totalBytes === 0) {
+        req.body = {};
+        next();
+        return;
+      }
+
+      if (!isJsonContentType) {
+        res.status(400).json({ error: 'Tipo de conteúdo inválido. Envie JSON UTF-8 válido.' });
+        return;
+      }
+
+      let rawText: string;
+      try {
+        rawText = decoder.decode(Buffer.concat(chunks)).trim();
+      } catch {
+        res.status(400).json({ error: 'Codificação UTF-8 inválida no corpo da requisição.' });
+        return;
+      }
+
+      if (rawText.length === 0) {
+        req.body = {};
+        next();
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        res.status(400).json({ error: 'JSON malformado no corpo da requisição.' });
+        return;
+      }
+
+      if (parsed === null || typeof parsed !== 'object') {
+        res.status(400).json({ error: 'O corpo JSON deve ser um objeto ou lista válida.' });
+        return;
+      }
+
+      req.body = parsed;
+      next();
+    });
+
+    req.on('error', () => {
+      finishError(400, 'Erro ao ler o corpo da requisição.');
+    });
+  };
+}
 
 function isPrivateOrReservedHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
@@ -379,9 +489,30 @@ function sendErrorResponse(res: Response, err: unknown): void {
 }
 
 export function createPortalApp(options: CreatePortalAppOptions): Express {
-  const app = express();
+  const { app } = options;
   app.set('trust proxy', 1);
-  app.use(express.json({ limit: '2.5mb' }));
+
+  const jsonMiddleware = options.jsonParser ?? createUtf8JsonParser(MAX_JSON_BODY_BYTES);
+  app.use(jsonMiddleware);
+
+  // Normalize body-parser errors in Node mode to consistent 400/413 JSON responses
+  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (!err || typeof err !== 'object') {
+      next(err);
+      return;
+    }
+    const e = err as { status?: number; statusCode?: number; type?: string };
+    const status = e.status ?? e.statusCode;
+    if (status === 413 || e.type === 'entity.too.large') {
+      res.status(413).json({ error: 'Corpo da requisição excede o limite de 4 MB.' });
+      return;
+    }
+    if (status === 400 || e.type === 'entity.parse.failed') {
+      res.status(400).json({ error: 'JSON malformado no corpo da requisição.' });
+      return;
+    }
+    next(err);
+  });
 
   let lazyDevSessionSecret: string | null = null;
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();

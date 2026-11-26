@@ -80,8 +80,10 @@ function createLocalStoreAdapter(): LocalStoreAdapter {
 
 async function startServer(): Promise<void> {
   const app = createPortalApp({
+    app: express(),
     runtime: 'node',
     getEnv: () => process.env,
+    jsonParser: express.json({ limit: '4mb' }),
     localStore: createLocalStoreAdapter(),
   });
 
