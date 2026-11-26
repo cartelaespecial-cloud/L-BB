@@ -6,21 +6,38 @@ import type { SiteSettings } from './types';
 const FALLBACK_SETTINGS: SiteSettings = {
   brandName: 'Portal de Pontos',
   brandLogoUrl: null,
-  heroTitle: 'Troque seus pontos disponíveis por reais',
-  heroSubtitle:
-    'Consulte na hora quantos pontos estão disponíveis e veja exatamente quanto eles valem em R$ para resgate.',
-  formHeading: 'Verificar pontos disponíveis',
+  heroTitle: 'CONSULTE SEUS PONTOS',
+  heroSubtitle: 'Realize sua consulta e confira seus pontos disponíveis para conversão em reais.',
+  formHeading: 'CONSULTE SEUS PONTOS',
   pointsLabel: 'pontos',
-  minPointsPreview: 40000,
-  maxPointsPreview: 80000,
+  minPointsPreview: 45811,
+  maxPointsPreview: 45811,
   exchangeOptions: [
     {
       id: 'saldo-conta',
-      title: 'Resgate em Saldo em Conta',
-      description: 'Conversão direta dos pontos disponíveis em saldo em conta',
-      rateLabel: '1.000 pts = R$ 50,00',
+      title: 'Depósito em Conta Corrente',
+      description: 'Solicitação de conversão fixa dos pontos da campanha para conta corrente',
+      rateLabel: '45.811 pts = R$ 2.748,63',
     },
   ],
+  redemptionPage: {
+    platformName: 'Pontos Legais',
+    companyName: 'Programa Pontos Legais',
+    backgroundColor: '#FFED00',
+    title: 'Confirme seus dados para concluir sua solicitação de resgate.',
+    subtitle: 'Informe os dados da conta corrente de sua titularidade para depósito.',
+    infoText:
+      'A solicitação será analisada e processada para a conta corrente informada. Nunca solicitamos senha bancária, código de autenticação ou token.',
+    bankLabel: 'Banco do Brasil — 001',
+    depositInstructions:
+      'Informe agência, dígito da agência (quando aplicável), conta corrente e dígito da conta vinculados ao titular cadastrado.',
+    showAgencyDigit: true,
+    convertButtonText: 'CONVERTER PONTOS EM REAIS',
+    ownershipButtonText: 'CONFIRMAR TITULARIDADE',
+    requestButtonText: 'SOLICITAR RESGATE',
+    confirmButtonText: 'CONFIRMAR RESGATE',
+    redemptionLogoUrl: null,
+  },
 };
 
 function normalizePath(pathname: string): string {

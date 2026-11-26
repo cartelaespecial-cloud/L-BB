@@ -1,6 +1,29 @@
 import crypto from 'node:crypto';
 import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
-import type { ConsultaAdminRecord, ExchangeOption, SiteSettings } from '../types.ts';
+import type {
+  ConsultaAdminRecord,
+  ConsultaPublicResult,
+  ExchangeOption,
+  RedemptionPageConfig,
+  SiteSettings,
+} from '../types.ts';
+import { CAMPAIGN_BRL_VALUE, CAMPAIGN_POINTS_GRANT } from '../utils/points.ts';
+import {
+  isValidBankAccount,
+  isValidBankAgency,
+  isValidBrPhone,
+  isValidCpf,
+  isValidFullName,
+  isValidHexColor,
+  isValidOptionalBankDigit,
+  isValidRequiredBankDigit,
+  maskBankAccount,
+  maskBankAgency,
+  maskCpf,
+  maskPhone,
+  normalizeFullName,
+  onlyDigits,
+} from '../utils/validation.ts';
 
 export interface StoredLogo {
   mime: 'image/png' | 'image/jpeg' | 'image/webp';
@@ -13,6 +36,7 @@ export type StoredConsulta = ConsultaAdminRecord;
 export interface PortalDataPayload {
   settings: Omit<SiteSettings, 'brandLogoUrl' | 'passcodeManagedByEnv'>;
   logo: StoredLogo | null;
+  redemptionLogo?: StoredLogo | null;
   consultas: StoredConsulta[];
   adminPasscodeHash?: string;
 }
@@ -71,35 +95,42 @@ export const INITIAL_LOCAL_ADMIN_HASH =
 
 const SALDO_CONTA_OPTION: ExchangeOption = {
   id: 'saldo-conta',
-  title: 'Resgate em Saldo em Conta',
-  description: 'Conversão direta dos pontos disponíveis em saldo em conta',
-  rateLabel: '1.000 pts = R$ 50,00',
+  title: 'Depósito em Conta Corrente',
+  description: 'Solicitação de conversão fixa dos pontos da campanha para conta corrente',
+  rateLabel: '45.811 pts = R$ 2.748,63',
 };
 
 const DEFAULT_EXCHANGE_OPTIONS: ExchangeOption[] = [SALDO_CONTA_OPTION];
 
-const DEFAULT_CORE_SETTINGS: Omit<SiteSettings, 'brandLogoUrl' | 'passcodeManagedByEnv'> = {
-  brandName: 'Portal de Pontos',
-  heroTitle: 'Troque seus pontos disponíveis por reais',
-  heroSubtitle:
-    'Consulte na hora quantos pontos estão disponíveis e veja exatamente quanto eles valem em R$ para resgate.',
-  formHeading: 'Verificar pontos disponíveis',
-  pointsLabel: 'pontos',
-  minPointsPreview: 40000,
-  maxPointsPreview: 80000,
-  exchangeOptions: DEFAULT_EXCHANGE_OPTIONS,
+export const DEFAULT_REDEMPTION_PAGE: Omit<RedemptionPageConfig, 'redemptionLogoUrl'> = {
+  platformName: 'Pontos Legais',
+  companyName: 'Programa Pontos Legais',
+  backgroundColor: '#FFED00',
+  title: 'Confirme seus dados para concluir sua solicitação de resgate.',
+  subtitle: 'Informe os dados da conta corrente de sua titularidade para depósito.',
+  infoText:
+    'A solicitação será analisada e processada para a conta corrente informada. Nunca solicitamos senha bancária, código de autenticação ou token.',
+  bankLabel: 'Banco do Brasil — 001',
+  depositInstructions:
+    'Informe agência, dígito da agência (quando aplicável), conta corrente e dígito da conta vinculados ao titular cadastrado.',
+  showAgencyDigit: true,
+  convertButtonText: 'CONVERTER PONTOS EM REAIS',
+  ownershipButtonText: 'CONFIRMAR TITULARIDADE',
+  requestButtonText: 'SOLICITAR RESGATE',
+  confirmButtonText: 'CONFIRMAR RESGATE',
 };
 
-const FICTITIOUS_PROFILES = [
-  'Ana Beatriz',
-  'Carlos Eduardo',
-  'Fernanda Costa',
-  'Rafael Mendes',
-  'Juliana Rocha',
-  'Marcos Vinícius',
-  'Patrícia Lima',
-  'Lucas Almeida',
-];
+const DEFAULT_CORE_SETTINGS: Omit<SiteSettings, 'brandLogoUrl' | 'passcodeManagedByEnv'> = {
+  brandName: 'Portal de Pontos',
+  heroTitle: 'CONSULTE SEUS PONTOS',
+  heroSubtitle: 'Realize sua consulta e confira seus pontos disponíveis para conversão em reais.',
+  formHeading: 'CONSULTE SEUS PONTOS',
+  pointsLabel: 'pontos',
+  minPointsPreview: CAMPAIGN_POINTS_GRANT,
+  maxPointsPreview: CAMPAIGN_POINTS_GRANT,
+  exchangeOptions: DEFAULT_EXCHANGE_OPTIONS,
+  redemptionPage: DEFAULT_REDEMPTION_PAGE,
+};
 
 function createUtf8JsonParser(limitBytes: number): RequestHandler {
   const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -246,7 +277,7 @@ function sanitizeConsultas(rawConsultas: unknown): StoredConsulta[] {
   for (const item of rawConsultas) {
     if (!item || typeof item !== 'object') continue;
     const record = item as Record<string, unknown>;
-    if ('cpfDigits' in record || 'cpfFormatted' in record || 'cpf' in record) {
+    if ('cpfDigits' in record || 'cpfFormatted' in record || 'cpf' in record || 'bankPassword' in record) {
       continue;
     }
     if (
@@ -260,15 +291,27 @@ function sanitizeConsultas(rawConsultas: unknown): StoredConsulta[] {
     ) {
       continue;
     }
+
     clean.push({
       id: record.id,
       protocol: record.protocol,
       profileLabel: record.profileLabel,
+      cpfHash: typeof record.cpfHash === 'string' ? record.cpfHash : undefined,
+      cpfMasked: typeof record.cpfMasked === 'string' ? record.cpfMasked : '***.***.***-**',
+      phoneMasked: typeof record.phoneMasked === 'string' ? record.phoneMasked : '(**) *****-****',
       referenceCode: record.referenceCode,
-      pointsAvailable: record.pointsAvailable,
+      pointsAvailable: CAMPAIGN_POINTS_GRANT,
+      amountBrl:
+        typeof record.amountBrl === 'number' && Number.isFinite(record.amountBrl)
+          ? record.amountBrl
+          : CAMPAIGN_BRL_VALUE,
       status: record.status,
       selectedOptionId: typeof record.selectedOptionId === 'string' ? record.selectedOptionId : null,
       selectedOptionTitle: typeof record.selectedOptionTitle === 'string' ? record.selectedOptionTitle : null,
+      bankLabel: typeof record.bankLabel === 'string' ? record.bankLabel : null,
+      agencyMasked: typeof record.agencyMasked === 'string' ? record.agencyMasked : null,
+      accountMasked: typeof record.accountMasked === 'string' ? record.accountMasked : null,
+      ownershipConfirmed: Boolean(record.ownershipConfirmed),
       createdAt: record.createdAt,
       exchangedAt: typeof record.exchangedAt === 'string' ? record.exchangedAt : null,
     });
@@ -292,6 +335,41 @@ function sanitizeLogo(rawLogo: unknown): StoredLogo | null {
     };
   }
   return null;
+}
+
+function sanitizeText(value: unknown, fallback: string, minLen: number, maxLen: number): string {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  if (trimmed.length < minLen) return fallback;
+  return trimmed.slice(0, maxLen);
+}
+
+function sanitizeRedemptionPage(
+  raw: unknown,
+  current: Omit<RedemptionPageConfig, 'redemptionLogoUrl'> = DEFAULT_REDEMPTION_PAGE,
+): Omit<RedemptionPageConfig, 'redemptionLogoUrl'> {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const bg =
+    typeof obj.backgroundColor === 'string' && isValidHexColor(obj.backgroundColor)
+      ? obj.backgroundColor.trim().toUpperCase()
+      : current.backgroundColor;
+
+  return {
+    platformName: sanitizeText(obj.platformName, current.platformName, 2, 60),
+    companyName: sanitizeText(obj.companyName, current.companyName, 2, 80),
+    backgroundColor: bg,
+    title: sanitizeText(obj.title, current.title, 4, 140),
+    subtitle: sanitizeText(obj.subtitle, current.subtitle, 4, 220),
+    infoText: sanitizeText(obj.infoText, current.infoText, 4, 360),
+    bankLabel: sanitizeText(obj.bankLabel, current.bankLabel, 2, 80),
+    depositInstructions: sanitizeText(obj.depositInstructions, current.depositInstructions, 4, 300),
+    showAgencyDigit:
+      typeof obj.showAgencyDigit === 'boolean' ? obj.showAgencyDigit : current.showAgencyDigit,
+    convertButtonText: sanitizeText(obj.convertButtonText, current.convertButtonText, 2, 50),
+    ownershipButtonText: sanitizeText(obj.ownershipButtonText, current.ownershipButtonText, 2, 50),
+    requestButtonText: sanitizeText(obj.requestButtonText, current.requestButtonText, 2, 50),
+    confirmButtonText: sanitizeText(obj.confirmButtonText, current.confirmButtonText, 2, 50),
+  };
 }
 
 export function normalizePortalData(raw: unknown, includeLocalHash: boolean): PortalDataPayload {
@@ -341,8 +419,10 @@ export function normalizePortalData(raw: unknown, includeLocalHash: boolean): Po
       minPointsPreview: minPts,
       maxPointsPreview: maxPts,
       exchangeOptions,
+      redemptionPage: sanitizeRedemptionPage(rawSettings.redemptionPage, DEFAULT_REDEMPTION_PAGE),
     },
     logo: sanitizeLogo(obj.logo),
+    redemptionLogo: sanitizeLogo(obj.redemptionLogo),
     consultas: sanitizeConsultas(obj.consultas),
   };
 
@@ -419,11 +499,8 @@ function verifyToken(token: string, secret: string): Record<string, unknown> | n
   }
 }
 
-function generateIllustrativePoints(minPts: number, maxPts: number): number {
-  const min = Math.max(100, Math.min(minPts, maxPts));
-  const max = Math.max(min, maxPts);
-  const raw = min === max ? min : crypto.randomInt(min, max + 1);
-  return Math.round(raw / 10) * 10;
+function hashCpf(cpfDigits: string, secret: string): string {
+  return crypto.createHmac('sha256', secret).update(`cpf:${cpfDigits}`).digest('hex');
 }
 
 function detectImageType(
@@ -454,10 +531,59 @@ function detectImageType(
   return null;
 }
 
-function hasDisallowedPersonalPayload(body: unknown): boolean {
-  if (body === undefined || body === null) return false;
-  if (typeof body !== 'object' || Array.isArray(body)) return true;
-  return Object.keys(body as Record<string, unknown>).length > 0;
+function hasForbiddenFinancialFields(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const forbidden = [
+    'password',
+    'senha',
+    'bankpassword',
+    'senhabancaria',
+    'token',
+    'authcode',
+    'codigoautenticacao',
+    'pin',
+    'cvv',
+    'cvc',
+    'taxa',
+    'fee',
+    'pixkey',
+    'pixkeytype',
+  ];
+  return Object.keys(body as Record<string, unknown>).some((k) =>
+    forbidden.includes(k.toLowerCase()),
+  );
+}
+
+function toPublicConsultaResult(
+  record: StoredConsulta,
+  claimToken: string,
+  alreadyRegistered = false,
+): ConsultaPublicResult {
+  return {
+    id: record.id,
+    protocol: record.protocol,
+    profileLabel: record.profileLabel,
+    cpfMasked: record.cpfMasked,
+    phoneMasked: record.phoneMasked,
+    referenceCode: record.referenceCode,
+    pointsAvailable: record.pointsAvailable,
+    amountBrl: record.amountBrl,
+    status: record.status,
+    selectedOptionTitle: record.selectedOptionTitle,
+    bankLabel: record.bankLabel,
+    agencyMasked: record.agencyMasked,
+    accountMasked: record.accountMasked,
+    ownershipConfirmed: record.ownershipConfirmed,
+    createdAt: record.createdAt,
+    exchangedAt: record.exchangedAt,
+    claimToken,
+    alreadyRegistered,
+  };
+}
+
+function toAdminConsulta(record: StoredConsulta): ConsultaAdminRecord {
+  const { cpfHash: _hiddenHash, ...safe } = record;
+  return safe;
 }
 
 function sendErrorResponse(res: Response, err: unknown): void {
@@ -642,7 +768,11 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       if (!options.localStore) {
         throw new StorageConfigError('Armazenamento local indisponível neste runtime.');
       }
-      return options.localStore.read();
+      const localEnvelope = options.localStore.read();
+      return {
+        revision: localEnvelope.revision,
+        data: normalizePortalData(localEnvelope.data, true),
+      };
     }
 
     let response: globalThis.Response;
@@ -755,6 +885,12 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
     return {
       ...data.settings,
       brandLogoUrl: data.logo ? `/api/logo?v=${data.logo.revision}` : null,
+      redemptionPage: {
+        ...data.settings.redemptionPage,
+        redemptionLogoUrl: data.redemptionLogo
+          ? `/api/redemption-logo?v=${data.redemptionLogo.revision}`
+          : null,
+      },
       passcodeManagedByEnv: requiresStrictSecrets() || Boolean(env.ADMIN_PASSCODE?.trim()),
     };
   }
@@ -833,39 +969,125 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
     }
   });
 
-  // Public illustrative points consultation
+  // Serve persisted redemption platform logo safely from store
+  app.get('/api/redemption-logo', async (_req, res) => {
+    try {
+      const { data } = await readPortalState();
+      const targetLogo = data.redemptionLogo ?? data.logo;
+      if (!targetLogo) {
+        res.status(404).json({ error: 'Logotipo da plataforma não configurado.' });
+        return;
+      }
+      const buffer = Buffer.from(targetLogo.base64, 'base64');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Type', targetLogo.mime);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.send(buffer);
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  // Etapa 1 -> Etapa 2: Validar dados cadastrais e conceder benefício fixo da campanha (sem duplicidade por CPF)
   app.post('/api/consultas', async (req, res) => {
-    if (hasDisallowedPersonalPayload(req.body)) {
+    if (hasForbiddenFinancialFields(req.body)) {
+      res.status(400).json({ error: 'Dados bancários sensíveis não são permitidos.' });
+      return;
+    }
+
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      fullName?: unknown;
+      cpf?: unknown;
+      phone?: unknown;
+      acceptedPrivacy?: unknown;
+    };
+
+    const fullName = typeof body.fullName === 'string' ? normalizeFullName(body.fullName) : '';
+    const cpfRaw = typeof body.cpf === 'string' ? body.cpf : '';
+    const phoneRaw = typeof body.phone === 'string' ? body.phone : '';
+    const acceptedPrivacy = body.acceptedPrivacy === true;
+
+    if (!isValidFullName(fullName)) {
+      res.status(400).json({ error: 'Informe seu nome completo válido (nome e sobrenome).' });
+      return;
+    }
+    if (!isValidCpf(cpfRaw)) {
+      res.status(400).json({ error: 'Informe um CPF válido com 11 dígitos.' });
+      return;
+    }
+    if (!isValidBrPhone(phoneRaw)) {
+      res.status(400).json({ error: 'Informe um telefone válido com DDD.' });
+      return;
+    }
+    if (!acceptedPrivacy) {
       res.status(400).json({
-        error:
-          'Dados pessoais como nome, CPF, e-mail ou telefone não são aceitos nesta consulta. O perfil de participante é gerado automaticamente no servidor.',
+        error: 'É necessário aceitar o Regulamento da Campanha e a Política de Privacidade (LGPD).',
       });
       return;
     }
 
     try {
       const claimSecret = getClaimSecret();
+      const cpfDigits = onlyDigits(cpfRaw);
+      const cpfHash = hashCpf(cpfDigits, claimSecret);
+      const cpfMasked = maskCpf(cpfDigits);
+      const phoneMasked = maskPhone(phoneRaw);
+
       const id = crypto.randomUUID();
-      const protocol = `IL-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
-      const profileLabel = FICTITIOUS_PROFILES[crypto.randomInt(0, FICTITIOUS_PROFILES.length)];
-      const referenceCode = `SIM-${crypto.randomInt(100000, 999999)}`;
+      const protocol = `CB-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
+      const referenceCode = `CAM-${crypto.randomInt(100000, 999999)}`;
       const createdAt = new Date().toISOString();
 
-      const { result: created } = await mutatePortalState((data) => {
-        const pointsAvailable = generateIllustrativePoints(
-          data.settings.minPointsPreview,
-          data.settings.maxPointsPreview,
-        );
+      const outcome = await mutatePortalState<{
+        errorStatus?: number;
+        errorMessage?: string;
+        record?: StoredConsulta;
+        alreadyRegistered?: boolean;
+      }>((data) => {
+        const existing = data.consultas.find((c) => c.cpfHash && c.cpfHash === cpfHash);
+        if (existing) {
+          if (existing.status === 'troca_solicitada') {
+            return {
+              nextData: data,
+              result: {
+                errorStatus: 409,
+                errorMessage: `Este CPF já recebeu o benefício da campanha e possui solicitação de resgate registrada (Protocolo ${existing.protocol}).`,
+              },
+            };
+          }
+          if (existing.profileLabel.toLowerCase() !== fullName.toLowerCase()) {
+            return {
+              nextData: data,
+              result: {
+                errorStatus: 409,
+                errorMessage:
+                  'Este CPF já possui um cadastro registrado na campanha. Não é possível realizar concessões duplicadas.',
+              },
+            };
+          }
+          return {
+            nextData: data,
+            result: { record: existing, alreadyRegistered: true },
+          };
+        }
 
         const record: StoredConsulta = {
           id,
           protocol,
-          profileLabel,
+          profileLabel: fullName,
+          cpfHash,
+          cpfMasked,
+          phoneMasked,
           referenceCode,
-          pointsAvailable,
+          pointsAvailable: CAMPAIGN_POINTS_GRANT,
+          amountBrl: CAMPAIGN_BRL_VALUE,
           status: 'consultado',
           selectedOptionId: null,
           selectedOptionTitle: null,
+          bankLabel: null,
+          agencyMasked: null,
+          accountMasked: null,
+          ownershipConfirmed: false,
           createdAt,
           exchangedAt: null,
         };
@@ -873,35 +1095,77 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
         const nextConsultas = [record, ...data.consultas].slice(0, 250);
         return {
           nextData: { ...data, consultas: nextConsultas },
-          result: record,
+          result: { record, alreadyRegistered: false },
         };
       });
 
-      const claimToken = signToken({ role: 'claim', consultaId: created.id }, 3600, claimSecret);
+      if (outcome.result.errorStatus) {
+        res.status(outcome.result.errorStatus).json({ error: outcome.result.errorMessage });
+        return;
+      }
 
-      res.status(201).json({
-        id: created.id,
-        protocol: created.protocol,
-        profileLabel: created.profileLabel,
-        referenceCode: created.referenceCode,
-        pointsAvailable: created.pointsAvailable,
-        status: created.status,
-        selectedOptionTitle: created.selectedOptionTitle,
-        createdAt: created.createdAt,
-        exchangedAt: created.exchangedAt,
-        claimToken,
-      });
+      const record = outcome.result.record!;
+      const claimToken = signToken({ role: 'claim', consultaId: record.id }, 3600, claimSecret);
+      const statusCode = outcome.result.alreadyRegistered ? 200 : 201;
+
+      res
+        .status(statusCode)
+        .json(toPublicConsultaResult(record, claimToken, Boolean(outcome.result.alreadyRegistered)));
     } catch (err) {
       sendErrorResponse(res, err);
     }
   });
 
-  // Confirm simulated exchange for a generated consultation
+  // Etapa 3: Confirmar titularidade e registrar solicitação de depósito em conta corrente (sem senha/código/token)
   app.patch('/api/consultas/:id/trocar', async (req, res) => {
+    if (hasForbiddenFinancialFields(req.body)) {
+      res.status(400).json({
+        error: 'Senhas bancárias, códigos de autenticação, tokens ou dados não permitidos foram rejeitados.',
+      });
+      return;
+    }
+
     const { id } = req.params;
-    const body = req.body as { optionId?: unknown; claimToken?: unknown };
-    if (typeof body.claimToken !== 'string' || typeof body.optionId !== 'string') {
-      res.status(400).json({ error: 'Dados da solicitação incompletos.' });
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      claimToken?: unknown;
+      ownershipConfirmed?: unknown;
+      acceptedTerms?: unknown;
+      agency?: unknown;
+      agencyDigit?: unknown;
+      accountNumber?: unknown;
+      accountDigit?: unknown;
+    };
+
+    if (typeof body.claimToken !== 'string') {
+      res.status(400).json({ error: 'Sessão de consulta inválida.' });
+      return;
+    }
+    if (body.ownershipConfirmed !== true || body.acceptedTerms !== true) {
+      res.status(400).json({
+        error: 'É obrigatório confirmar a titularidade dos dados e concordar com as condições do resgate.',
+      });
+      return;
+    }
+
+    const agency = typeof body.agency === 'string' ? body.agency : '';
+    const agencyDigit = typeof body.agencyDigit === 'string' ? body.agencyDigit : '';
+    const accountNumber = typeof body.accountNumber === 'string' ? body.accountNumber : '';
+    const accountDigit = typeof body.accountDigit === 'string' ? body.accountDigit : '';
+
+    if (!isValidBankAgency(agency)) {
+      res.status(400).json({ error: 'Informe um número de agência válido (3 a 5 dígitos).' });
+      return;
+    }
+    if (!isValidOptionalBankDigit(agencyDigit)) {
+      res.status(400).json({ error: 'Dígito da agência inválido (use 1 dígito ou X).' });
+      return;
+    }
+    if (!isValidBankAccount(accountNumber)) {
+      res.status(400).json({ error: 'Informe um número de conta corrente válido.' });
+      return;
+    }
+    if (!isValidRequiredBankDigit(accountDigit)) {
+      res.status(400).json({ error: 'Informe o dígito verificador da conta corrente.' });
       return;
     }
 
@@ -909,38 +1173,50 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       const claimSecret = getClaimSecret();
       const tokenData = verifyToken(body.claimToken, claimSecret);
       if (!tokenData || tokenData.role !== 'claim' || tokenData.consultaId !== id) {
-        res.status(403).json({ error: 'Sessão da consulta inválida ou expirada. Gere uma nova consulta.' });
+        res.status(403).json({
+          error: 'Sessão da consulta inválida ou expirada. Realize a consulta novamente.',
+        });
         return;
       }
+
+      const maskedAgency = maskBankAgency(agency, agencyDigit);
+      const maskedAccount = maskBankAccount(accountNumber, accountDigit);
 
       const outcome = await mutatePortalState<{
         errorStatus?: number;
         errorMessage?: string;
         record?: StoredConsulta;
       }>((data) => {
-        const option =
-          data.settings.exchangeOptions.find((opt) => opt.id === body.optionId) ??
-          (body.optionId === SALDO_CONTA_OPTION.id ? SALDO_CONTA_OPTION : undefined);
-        if (!option) {
-          return {
-            nextData: data,
-            result: { errorStatus: 400, errorMessage: 'Opção de troca inválida.' },
-          };
-        }
-
         const idx = data.consultas.findIndex((c) => c.id === id);
         if (idx === -1) {
           return {
             nextData: data,
-            result: { errorStatus: 404, errorMessage: 'Consulta não encontrada.' },
+            result: { errorStatus: 404, errorMessage: 'Cadastro não encontrado.' },
           };
         }
 
+        const existing = data.consultas[idx];
+        if (existing.status === 'troca_solicitada') {
+          return {
+            nextData: data,
+            result: {
+              errorStatus: 409,
+              errorMessage: `O resgate para este cadastro já foi solicitado (Protocolo ${existing.protocol}).`,
+            },
+          };
+        }
+
+        const bankLabel = data.settings.redemptionPage?.bankLabel || DEFAULT_REDEMPTION_PAGE.bankLabel;
+
         const updatedRecord: StoredConsulta = {
-          ...data.consultas[idx],
+          ...existing,
           status: 'troca_solicitada',
-          selectedOptionId: option.id,
-          selectedOptionTitle: option.title,
+          selectedOptionId: SALDO_CONTA_OPTION.id,
+          selectedOptionTitle: bankLabel,
+          bankLabel,
+          agencyMasked: maskedAgency,
+          accountMasked: maskedAccount,
+          ownershipConfirmed: true,
           exchangedAt: new Date().toISOString(),
         };
 
@@ -959,18 +1235,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
       }
 
       const updated = outcome.result.record!;
-      res.json({
-        id: updated.id,
-        protocol: updated.protocol,
-        profileLabel: updated.profileLabel,
-        referenceCode: updated.referenceCode,
-        pointsAvailable: updated.pointsAvailable,
-        status: updated.status,
-        selectedOptionTitle: updated.selectedOptionTitle,
-        createdAt: updated.createdAt,
-        exchangedAt: updated.exchangedAt,
-        claimToken: body.claimToken,
-      });
+      res.json(toPublicConsultaResult(updated, body.claimToken, false));
     } catch (err) {
       sendErrorResponse(res, err);
     }
@@ -1062,6 +1327,10 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
           maxPointsPreview = Math.max(minPointsPreview, Math.min(1000000, Math.round(body.maxPointsPreview)));
         }
 
+        const redemptionPage = body.redemptionPage
+          ? sanitizeRedemptionPage(body.redemptionPage, current.settings.redemptionPage)
+          : current.settings.redemptionPage;
+
         const nextData: PortalDataPayload = {
           ...current,
           settings: {
@@ -1073,6 +1342,7 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
             pointsLabel,
             minPointsPreview,
             maxPointsPreview,
+            redemptionPage,
           },
         };
         return { nextData, result: null };
@@ -1143,6 +1413,68 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
     }
   });
 
+  // Admin upload redemption page platform logo
+  app.post('/api/admin/redemption-logo', requireAdminAuth, async (req, res) => {
+    const body = req.body as { dataUrl?: unknown };
+    if (typeof body.dataUrl !== 'string') {
+      res.status(400).json({ error: 'Envie uma imagem válida.' });
+      return;
+    }
+
+    const match = body.dataUrl.match(/^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)$/);
+    if (!match) {
+      res.status(400).json({ error: 'Formato não suportado. Use PNG, JPG ou WEBP.' });
+      return;
+    }
+
+    const buffer = Buffer.from(match[2], 'base64');
+    if (buffer.length === 0 || buffer.length > 1.5 * 1024 * 1024) {
+      res.status(400).json({ error: 'A imagem deve ter no máximo 1,5 MB.' });
+      return;
+    }
+
+    const detected = detectImageType(buffer);
+    if (!detected) {
+      res.status(400).json({ error: 'Arquivo de imagem inválido ou corrompido.' });
+      return;
+    }
+
+    try {
+      const nextLogo: StoredLogo = {
+        mime: detected.mime,
+        base64: buffer.toString('base64'),
+        revision: Date.now(),
+      };
+
+      const { data } = await mutatePortalState((current) => ({
+        nextData: { ...current, redemptionLogo: nextLogo },
+        result: null,
+      }));
+
+      const publicSettings = toPublicSettings(data);
+      res.json({
+        redemptionLogoUrl: publicSettings.redemptionPage.redemptionLogoUrl,
+        settings: publicSettings,
+      });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  // Admin remove redemption page platform logo
+  app.delete('/api/admin/redemption-logo', requireAdminAuth, async (_req, res) => {
+    try {
+      const { data } = await mutatePortalState((current) => ({
+        nextData: { ...current, redemptionLogo: null },
+        result: null,
+      }));
+      const publicSettings = toPublicSettings(data);
+      res.json({ redemptionLogoUrl: null, settings: publicSettings });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
   // Admin change passcode (local Node dev only when env passcode is not set)
   app.put('/api/admin/passcode', requireAdminAuth, async (req, res) => {
     const env = options.getEnv();
@@ -1184,11 +1516,11 @@ export function createPortalApp(options: CreatePortalAppOptions): Express {
     }
   });
 
-  // Admin list consultations
+  // Admin list consultations (stripped of internal cpfHash)
   app.get('/api/admin/consultas', requireAdminAuth, async (_req, res) => {
     try {
       const { data } = await readPortalState();
-      res.json({ consultas: data.consultas });
+      res.json({ consultas: data.consultas.map(toAdminConsulta) });
     } catch (err) {
       sendErrorResponse(res, err);
     }

